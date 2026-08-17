@@ -161,130 +161,144 @@ namespace BMS_Protocol_Simulator
                             if (read > 0)
                             {
                                 rxLen += read;
+                                // ── 协议分帧与处理机制 ──
+                                if (ProtocolHandler is PylontechAsciiHandler)
+                                {
+                                    while (rxLen > 0)
+                                    {
+                                        int soiIndex = -1;
+                                        for (int i = 0; i < rxLen; i++)
+                                        {
+                                            if (rxBuf[i] == (byte)'~')
+                                            {
+                                                soiIndex = i;
+                                                break;
+                                            }
+                                        }
+
+                                        if (soiIndex < 0)
+                                        {
+                                            if (rxLen > 256 || swIdle.ElapsedMilliseconds >= 50)
+                                                rxLen = 0;
+                                            break;
+                                        }
+
+                                        if (soiIndex > 0)
+                                        {
+                                            Array.Copy(rxBuf, soiIndex, rxBuf, 0, rxLen - soiIndex);
+                                            rxLen -= soiIndex;
+                                        }
+
+                                        int eoiIndex = -1;
+                                        for (int i = 0; i < rxLen; i++)
+                                        {
+                                            if (rxBuf[i] == 0x0D)
+                                            {
+                                                eoiIndex = i;
+                                                break;
+                                            }
+                                        }
+
+                                        if (eoiIndex < 0) break;
+
+                                        int frameLen = eoiIndex + 1;
+                                        byte[] currentFrame = new byte[frameLen];
+                                        Array.Copy(rxBuf, 0, currentFrame, 0, frameLen);
+                                        Array.Copy(rxBuf, frameLen, rxBuf, 0, rxLen - frameLen);
+                                        rxLen -= frameLen;
+
+                                        RxCount++;
+                                        Stopwatch swResp = Stopwatch.StartNew();
+                                        if (OnLogEvent != null) OnLogEvent(this, new LogEventArgs(false, currentFrame, ""));
+
+                                        byte[] txResp;
+                                        string decodedInfo;
+                                        if (ProtocolHandler.TryProcessQuery(currentFrame, currentFrame.Length, Model, ReplyAllIds, SpecificId, out txResp, out decodedInfo))
+                                        {
+                                            Thread.Sleep(5);
+                                            lock (_portLock) { if (_port != null && _port.IsOpen) _port.Write(txResp, 0, txResp.Length); }
+                                            swResp.Stop();
+                                            TxCount++;
+                                            if (OnLogEvent != null) OnLogEvent(this, new LogEventArgs(true, txResp, decodedInfo, swResp.ElapsedMilliseconds));
+                                        }
+                                        else { ErrorCount++; }
+                                    }
+                                }
+                                else
+                                {
+                                    bool shouldProcess = false;
+                                    if (rxLen >= 8 && ModbusCrc.Check(rxBuf, 8)) shouldProcess = true;
+                                    else if (rxLen > 0 && swIdle.ElapsedMilliseconds >= 12) shouldProcess = true;
+
+                                    if (shouldProcess)
+                                    {
+                                        int frameLen = (rxLen >= 8 && ModbusCrc.Check(rxBuf, 8)) ? 8 : rxLen;
+                                        byte[] currentFrame = new byte[frameLen];
+                                        Array.Copy(rxBuf, 0, currentFrame, 0, frameLen);
+                                        Array.Copy(rxBuf, frameLen, rxBuf, 0, rxLen - frameLen);
+                                        rxLen -= frameLen;
+
+                                        RxCount++;
+                                        Stopwatch swResp = Stopwatch.StartNew();
+                                        if (OnLogEvent != null) OnLogEvent(this, new LogEventArgs(false, currentFrame, ""));
+
+                                        byte[] txResp;
+                                        string decodedInfo;
+                                        if (ProtocolHandler.TryProcessQuery(currentFrame, currentFrame.Length, Model, ReplyAllIds, SpecificId, out txResp, out decodedInfo))
+                                        {
+                                            Thread.Sleep(6);
+                                            lock (_portLock) { if (_port != null && _port.IsOpen) _port.Write(txResp, 0, txResp.Length); }
+                                            swResp.Stop();
+                                            TxCount++;
+                                            if (OnLogEvent != null) OnLogEvent(this, new LogEventArgs(true, txResp, decodedInfo, swResp.ElapsedMilliseconds));
+                                        }
+                                        else { ErrorCount++; }
+                                    }
+                                }
                                 swIdle.Restart();
                             }
                         }
-
-                        // 空闲断帧机制 (ASCII 遇到 \r 触发，Modbus 收到 8 字节或 10ms 空闲触发)
-                        bool shouldProcess = false;
-                        if (rxLen > 0)
-                        {
-                            if (ProtocolHandler is PylontechAsciiHandler && rxBuf[rxLen - 1] == 0x0D)
-                            {
-                                shouldProcess = true;
-                            }
-                            else if (rxLen == 8)
-                            {
-                                shouldProcess = true;
-                            }
-                            else if (swIdle.ElapsedMilliseconds >= 10)
-                            {
-                                shouldProcess = true;
-                            }
-                        }
-
-                        if (shouldProcess)
-                        {
-                            RxCount++;
-                            byte[] currentFrame = new byte[rxLen];
-                            Array.Copy(rxBuf, currentFrame, rxLen);
-                            rxLen = 0;
-
-                            Stopwatch swResp = Stopwatch.StartNew();
-
-                            if (OnLogEvent != null)
-                                OnLogEvent(this, new LogEventArgs(false, currentFrame, ""));
-
-                            byte[] txResp;
-                            string decodedInfo;
-                            if (ProtocolHandler.TryProcessQuery(currentFrame, currentFrame.Length, Model, ReplyAllIds, SpecificId, out txResp, out decodedInfo))
-                            {
-                                // 模拟真实 BMS 处理时延 (5~8ms)
-                                Thread.Sleep(6);
-
-                                lock (_portLock)
-                                {
-                                    if (_port != null && _port.IsOpen)
-                                    {
-                                        _port.Write(txResp, 0, txResp.Length);
-                                    }
-                                }
-                                swResp.Stop();
-                                TxCount++;
-                                if (OnLogEvent != null)
-                                    OnLogEvent(this, new LogEventArgs(true, txResp, decodedInfo, swResp.ElapsedMilliseconds));
-                            }
-                            else
-                            {
-                                ErrorCount++;
-                            }
-                        }
-                        else
-                        {
-                            Thread.Sleep(1);
-                        }
+                        Thread.Sleep(1);
                     }
                     else
                     {
-                        // ── 主机轮询模式：定期向真实电池包发送查询 ──
                         if (swPoll.ElapsedMilliseconds >= PollIntervalMs)
                         {
                             swPoll.Restart();
                             byte[] query = ProtocolHandler.BuildMasterPollFrame(masterTargetId, pollPhase);
                             pollPhase = (pollPhase + 1) % 3;
-
-                            lock (_portLock)
-                            {
-                                if (_port != null && _port.IsOpen)
-                                {
-                                    _port.Write(query, 0, query.Length);
-                                }
-                            }
+                            lock (_portLock) { if (_port != null && _port.IsOpen) _port.Write(query, 0, query.Length); }
                             TxCount++;
-                            if (OnLogEvent != null)
-                                OnLogEvent(this, new LogEventArgs(true, query, string.Format("[主机轮询] 发送查询 ID:{0} Phase:{1}", masterTargetId, pollPhase)));
+                            if (OnLogEvent != null) OnLogEvent(this, new LogEventArgs(true, query, string.Format("[主机轮询] 发送查询 ID:{0} Phase:{1}", masterTargetId, pollPhase)));
                         }
 
                         int bytesToRead = 0;
-                        lock (_portLock)
-                        {
-                            if (_port != null && _port.IsOpen)
-                                bytesToRead = _port.BytesToRead;
-                        }
-
+                        lock (_portLock) { if (_port != null && _port.IsOpen) bytesToRead = _port.BytesToRead; }
                         if (bytesToRead > 0)
                         {
                             int read = 0;
-                            lock (_portLock)
-                            {
-                                if (_port != null && _port.IsOpen)
-                                    read = _port.Read(rxBuf, rxLen, Math.Min(bytesToRead, rxBuf.Length - rxLen));
-                            }
-                            rxLen += read;
-                            swIdle.Restart();
+                            lock (_portLock) { if (_port != null && _port.IsOpen) read = _port.Read(rxBuf, rxLen, Math.Min(bytesToRead, rxBuf.Length - rxLen)); }
+                            if (read > 0) { rxLen += read; swIdle.Restart(); }
                         }
 
-                        if (rxLen > 0 && swIdle.ElapsedMilliseconds >= 25)
+                        if (rxLen > 0)
                         {
-                            RxCount++;
-                            byte[] currentFrame = new byte[rxLen];
-                            Array.Copy(rxBuf, currentFrame, rxLen);
-                            rxLen = 0;
+                            bool ready = false;
+                            if (ProtocolHandler is PylontechAsciiHandler) { if (rxBuf[rxLen - 1] == 0x0D || swIdle.ElapsedMilliseconds >= 25) ready = true; }
+                            else if (swIdle.ElapsedMilliseconds >= 25) ready = true;
 
-                            string decoded;
-                            if (ProtocolHandler.TryDecodeMasterResponse(currentFrame, currentFrame.Length, Model, out decoded))
+                            if (ready)
                             {
-                                if (OnLogEvent != null)
-                                    OnLogEvent(this, new LogEventArgs(false, currentFrame, decoded));
-                            }
-                            else
-                            {
-                                ErrorCount++;
-                                if (OnLogEvent != null)
-                                    OnLogEvent(this, new LogEventArgs(false, currentFrame, "[未知从机响应或校验失败]"));
+                                RxCount++;
+                                byte[] currentFrame = new byte[rxLen];
+                                Array.Copy(rxBuf, currentFrame, rxLen);
+                                rxLen = 0;
+                                string decoded;
+                                if (ProtocolHandler.TryDecodeMasterResponse(currentFrame, currentFrame.Length, Model, out decoded))
+                                { if (OnLogEvent != null) OnLogEvent(this, new LogEventArgs(false, currentFrame, decoded)); }
+                                else { ErrorCount++; if (OnLogEvent != null) OnLogEvent(this, new LogEventArgs(false, currentFrame, "[未知从机响应或校验失败]")); }
                             }
                         }
-
                         Thread.Sleep(5);
                     }
                 }

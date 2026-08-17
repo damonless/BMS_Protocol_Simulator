@@ -152,19 +152,21 @@ namespace BMS_Protocol_Simulator
 
     public class MainForm : Form
     {
-        // ── Win32 API 锁定与防闪烁 ──
+        // ── Win32 API 锁定与双向防闪烁滚动 ──
+        [StructLayout(LayoutKind.Sequential)]
+        private struct POINT
+        {
+            public int X;
+            public int Y;
+        }
+
         [DllImport("user32.dll")]
         private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll")]
-        private static extern int GetScrollPos(IntPtr hWnd, int nBar);
-        [DllImport("user32.dll")]
-        private static extern int SetScrollPos(IntPtr hWnd, int nBar, int nPos, bool bRedraw);
-        [DllImport("user32.dll")]
-        private static extern bool PostMessageA(IntPtr hWnd, int nBar, int wParam, int lParam);
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, ref POINT lParam);
         private const int WM_SETREDRAW = 0x000B;
-        private const int SB_VERT = 1;
-        private const int WM_VSCROLL = 0x115;
-        private const int SB_THUMBPOSITION = 4;
+        private const int EM_GETSCROLLPOS = 0x04DD;
+        private const int EM_SETSCROLLPOS = 0x04DE;
 
         private BmsDataModel _model;
         private SerialCommManager _comm;
@@ -1249,14 +1251,14 @@ namespace BMS_Protocol_Simulator
                 // 默认颜色: TX天蓝, RX浅绿
                 Color textColor = e.IsTx ? Color.FromArgb(120, 180, 250) : Color.FromArgb(100, 220, 140);
 
-                // 告警/保护报文摘要智能高亮:
+                // 告警/保护报文摘要智能高亮 (仅在真正触发告警或保护跳闸时高亮):
                 if (!string.IsNullOrEmpty(e.Summary))
                 {
-                    if (e.Summary.Contains("保护") || e.Summary.Contains("故障") || e.Summary.Contains("Prot"))
+                    if (e.Summary.Contains("保护跳闸") || e.Summary.Contains("系统故障") || e.Summary.Contains("保护触发") || e.Summary.Contains("错误码"))
                     {
                         textColor = Color.FromArgb(248, 113, 113); // 亮红 (保护跳闸)
                     }
-                    else if (e.Summary.Contains("告警") || e.Summary.Contains("警告") || e.Summary.Contains("Warn"))
+                    else if (e.Summary.Contains("告警提示") || e.Summary.Contains("告警触发") || e.Summary.Contains("警告提示"))
                     {
                         textColor = Color.FromArgb(251, 191, 36);  // 亮橙黄 (告警提示)
                     }
@@ -1304,7 +1306,9 @@ namespace BMS_Protocol_Simulator
                     SendMessage(rtbLog.Handle, WM_SETREDRAW, IntPtr.Zero, IntPtr.Zero);
                     try
                     {
-                        int vScroll = GetScrollPos(rtbLog.Handle, SB_VERT);
+                        // 完整记录当前的水平 (X) 与垂直 (Y) 像素滚动位置与选中范围
+                        POINT scrollPos = new POINT();
+                        SendMessage(rtbLog.Handle, EM_GETSCROLLPOS, IntPtr.Zero, ref scrollPos);
                         int selStart = rtbLog.SelectionStart;
                         int selLen = rtbLog.SelectionLength;
 
@@ -1314,8 +1318,8 @@ namespace BMS_Protocol_Simulator
                         rtbLog.AppendText(logText);
 
                         rtbLog.Select(selStart, selLen);
-                        SetScrollPos(rtbLog.Handle, SB_VERT, vScroll, true);
-                        PostMessageA(rtbLog.Handle, WM_VSCROLL, SB_THUMBPOSITION + 0x10000 * vScroll, 0);
+                        // 无缝恢复 X 与 Y 双向滚动位置，彻底杜绝向右查看时向左跳动的 bug
+                        SendMessage(rtbLog.Handle, EM_SETSCROLLPOS, IntPtr.Zero, ref scrollPos);
                     }
                     finally
                     {
