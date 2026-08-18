@@ -220,7 +220,7 @@ namespace BMS_Protocol_Simulator
                     return (ushort)Math.Max(0, Math.Min(100, (int)Math.Round(model.SOH)));
 
                 case 0x002C: // 循环次数 (PDF Page 7)
-                    return 50;
+                    return (ushort)Math.Max(0, Math.Min(65535, model.CycleCount));
 
                 case 0x002D: // 充电剩余时间 (min, PDF Page 7)
                     return (model.Current > 0.1 && model.MaxChargeCurrent > 0) ? (ushort)60 : (ushort)0;
@@ -698,8 +698,8 @@ namespace BMS_Protocol_Simulator
                     sb.Append(((ushort)uVoltMv).ToString("X4"));          // 1. 电池组系统总平均电压 (mV)
                     sb.Append(((ushort)sCurr10Ma).ToString("X4"));         // 2. 电池组系统总电流 (10mA, 有符号)
                     sb.Append(uSoc.ToString("X2"));                       // 3. 电池组系统 SOC (%)
-                    sb.Append(((ushort)50).ToString("X4"));                // 4. 平均循环次数
-                    sb.Append(((ushort)50).ToString("X4"));                // 5. 最大循环次数
+                    sb.Append(((ushort)Math.Max(0, Math.Min(65535, model.CycleCount))).ToString("X4")); // 4. 平均循环次数
+                    sb.Append(((ushort)Math.Max(0, Math.Min(65535, model.CycleCount))).ToString("X4")); // 5. 最大循环次数
                     sb.Append(uSoh.ToString("X2"));                       // 6. 平均 SOH (%)
                     sb.Append(uSoh.ToString("X2"));                       // 7. 最小 SOH (%)
                     sb.Append(cellVoltMax.ToString("X4"));                 // 8. 单芯最高电压 (mV)
@@ -777,9 +777,8 @@ namespace BMS_Protocol_Simulator
                 {
                     // 1. 充电电压建议上限 (mV, Accuracy 3)
                     ushort uCvMv = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.CVVoltage * 1000)));
-                    // 2. 放电电压建议下限 (mV, Accuracy 3)
-                    double cutoffV = model.Voltage < 35.0 ? 21.0 : 42.0;
-                    ushort uCutoffMv = (ushort)Math.Max(0, Math.Min(65535, Math.Round(cutoffV * 1000)));
+                    // 2. 放电电压建议下限 (mV, Accuracy 3, 支持 6KU/3KU 标准对齐)
+                    ushort uCutoffMv = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.CutoffVoltage * 1000)));
                     // 3. 最大充电电流 (10mA / 0.01A: 当禁止充电或处于过压/高温/故障保护时强制输出 0A)
                     bool canCharge = model.StatusChargeEnable && !model.ProtOverVolt && !model.ProtHighTemp && !model.ProtSystemFault;
                     ushort uMaxChg = (ushort)(canCharge ? Math.Max(0, Math.Min(65535, Math.Round(model.MaxChargeCurrent * 100))) : 0);
@@ -799,6 +798,8 @@ namespace BMS_Protocol_Simulator
                         statusByte |= 0x40; // 允许放电 (Bit 6 = 1)
                     if (model.StatusForceCharge)
                         statusByte |= 0x20; // 强制充电 (Bit 5 = 1)
+                    if (model.StatusFullCharge)
+                        statusByte |= 0x10; // 满充请求 (Bit 4 = 1)
 
                     StringBuilder sb = new StringBuilder();
                     sb.Append(uCvMv.ToString("X4"));
@@ -808,9 +809,9 @@ namespace BMS_Protocol_Simulator
                     sb.Append(statusByte.ToString("X2"));
 
                     infoData = sb.ToString();
-                    decodedInfo = string.Format("[PYLON-63H System Config] 响应充放电控制: CV={0:F2}V, 截止={1:F2}V, 最大充电电流={2:F1}A, 最大放电电流={3:F1}A, 状态=0x{4:X2}(充使能:{5}, 放使能:{6})",
-                        model.CVVoltage, cutoffV, canCharge ? model.MaxChargeCurrent : 0, canDischarge ? model.MaxDischargeCurrent : 0, statusByte,
-                        (statusByte & 0x80) != 0, (statusByte & 0x40) != 0);
+                    decodedInfo = string.Format("[PYLON-63H System Config] 响应充放电控制: CV={0:F2}V, 截止={1:F2}V, 最大充电电流={2:F1}A, 最大放电电流={3:F1}A, 状态=0x{4:X2}(充使能:{5}, 放使能:{6}, 强充:{7}, 满充:{8})",
+                        model.CVVoltage, model.CutoffVoltage, canCharge ? model.MaxChargeCurrent : 0, canDischarge ? model.MaxDischargeCurrent : 0, statusByte,
+                        (statusByte & 0x80) != 0, (statusByte & 0x40) != 0, (statusByte & 0x20) != 0, (statusByte & 0x10) != 0);
                 }
                 else if (cid2 == "64" || cid2 == "95") // 2.5 控制电池组系统关机指令
                 {
@@ -843,7 +844,7 @@ namespace BMS_Protocol_Simulator
                     sb.Append(uRemCap10Mah.ToString("X4"));         // 剩余容量 (10mAh)
                     sb.Append("02");                                // P - 预留/已定义
                     sb.Append(uFullCap10Mah.ToString("X4"));        // 满充总容量 (10mAh)
-                    sb.Append(((ushort)50).ToString("X4"));          // 循环次数
+                    sb.Append(((ushort)Math.Max(0, Math.Min(65535, model.CycleCount))).ToString("X4")); // 循环次数
                     sb.Append(uSoc.ToString("X2"));                 // 电池 SOC (%)
 
                     infoData = sb.ToString();
@@ -910,8 +911,7 @@ namespace BMS_Protocol_Simulator
                     ushort chgLtKelvin = (ushort)(0 + 2731);
                     ushort maxChg10Ma = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.MaxChargeCurrent * 100)));
                     ushort batOvMv = (ushort)Math.Max(0, Math.Min(65535, Math.Round((model.CVVoltage + 1.0) * 1000)));
-                    double cutoffV = model.Voltage < 35.0 ? 21.0 : 42.0;
-                    ushort batUvMv = (ushort)Math.Max(0, Math.Min(65535, Math.Round(cutoffV * 1000)));
+                    ushort batUvMv = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.CutoffVoltage * 1000)));
                     ushort disHtKelvin = (ushort)(600 + 2731);
                     ushort disLtKelvin = (ushort)(-100 + 2731);
                     ushort maxDis10Ma = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.MaxDischargeCurrent * 100)));

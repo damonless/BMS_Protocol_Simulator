@@ -1,2 +1,4 @@
 /.codegraph
 BMS_Protocol_Simulator.exe
+bms_default_config.ini
+*.pdf
