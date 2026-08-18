@@ -209,6 +209,8 @@ namespace BMS_Protocol_Simulator
                     return warn;
 
                 case 0x0029: // 最大充电电流 (10mA, PDF Page 7)
+                    if (!model.StatusChargeEnable || model.ProtOverVolt || model.ProtHighTemp || model.ProtSystemFault)
+                        return 0;
                     return (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(model.MaxChargeCurrent * 100)));
 
                 case 0x002A: // CV 恒压充电点 (10mV, PDF Page 7)
@@ -373,7 +375,8 @@ namespace BMS_Protocol_Simulator
                 resp[11] = (byte)((ushort)sTemp >> 8); resp[12] = (byte)((ushort)sTemp & 0xFF);
 
                 // 0x0019 最大充电流 (0.1A)
-                ushort uMaxChgI = (ushort)Math.Round(model.MaxChargeCurrent * 10);
+                ushort uMaxChgI = (ushort)((model.StatusChargeEnable && !model.ProtOverVolt && !model.ProtHighTemp && !model.ProtSystemFault)
+                    ? Math.Round(model.MaxChargeCurrent * 10) : 0);
                 resp[13] = (byte)(uMaxChgI >> 8); resp[14] = (byte)(uMaxChgI & 0xFF);
 
                 // 0x001A 剩余容量 (0.1Ah)
@@ -532,7 +535,8 @@ namespace BMS_Protocol_Simulator
                     ushort uCvV = (ushort)Math.Round(model.CVVoltage * 100);
                     resp[3] = (byte)(uCvV >> 8); resp[4] = (byte)(uCvV & 0xFF);
                     resp[5] = 0; resp[6] = 0;
-                    ushort uMaxChgI = (ushort)Math.Round(model.MaxChargeCurrent * 10);
+                    ushort uMaxChgI = (ushort)((model.StatusChargeEnable && !model.ProtOverVolt && !model.ProtHighTemp && !model.ProtSystemFault)
+                        ? Math.Round(model.MaxChargeCurrent * 10) : 0);
                     resp[7] = (byte)(uMaxChgI >> 8); resp[8] = (byte)(uMaxChgI & 0xFF);
                 }
                 ushort crc = ModbusCrc.Calculate(resp, 9);
@@ -776,10 +780,12 @@ namespace BMS_Protocol_Simulator
                     // 2. 放电电压建议下限 (mV, Accuracy 3)
                     double cutoffV = model.Voltage < 35.0 ? 21.0 : 42.0;
                     ushort uCutoffMv = (ushort)Math.Max(0, Math.Min(65535, Math.Round(cutoffV * 1000)));
-                    // 3. 最大充电电流 (10mA / 0.01A: PDF page 20: 0x09C4 = 2500 -> 25.0A; 100.0A -> 10000 = 0x2710)
-                    ushort uMaxChg = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.MaxChargeCurrent * 100)));
-                    // 4. 最大放电电流 (10mA)
-                    ushort uMaxDis = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.MaxDischargeCurrent * 100)));
+                    // 3. 最大充电电流 (10mA / 0.01A: 当禁止充电或处于过压/高温/故障保护时强制输出 0A)
+                    bool canCharge = model.StatusChargeEnable && !model.ProtOverVolt && !model.ProtHighTemp && !model.ProtSystemFault;
+                    ushort uMaxChg = (ushort)(canCharge ? Math.Max(0, Math.Min(65535, Math.Round(model.MaxChargeCurrent * 100))) : 0);
+                    // 4. 最大放电电流 (10mA: 当禁止放电或处于欠压/低温/故障保护时强制输出 0A)
+                    bool canDischarge = model.StatusDischargeEnable && !model.ProtUnderVolt && !model.ProtUnderTemp && !model.ProtSystemFault;
+                    ushort uMaxDis = (ushort)(canDischarge ? Math.Max(0, Math.Min(65535, Math.Round(model.MaxDischargeCurrent * 100))) : 0);
 
                     // 5. 充放电状态字 (1 字节):
                     // Bit 7: Charge enable (1: yes; 0: request stop charge)
@@ -787,9 +793,9 @@ namespace BMS_Protocol_Simulator
                     // Bit 5: 强充，立即充电/charge immediately (1: yes; 0: normal)
                     // Bit 4: 满充请求/full charge request (1: yes; 0: normal)
                     byte statusByte = 0;
-                    if (model.StatusChargeEnable && !model.ProtOverVolt && !model.ProtHighTemp && !model.ProtSystemFault)
+                    if (canCharge)
                         statusByte |= 0x80; // 允许充电 (Bit 7 = 1)
-                    if (model.StatusDischargeEnable && !model.ProtUnderVolt && !model.ProtUnderTemp && !model.ProtSystemFault)
+                    if (canDischarge)
                         statusByte |= 0x40; // 允许放电 (Bit 6 = 1)
                     if (model.StatusForceCharge)
                         statusByte |= 0x20; // 强制充电 (Bit 5 = 1)
@@ -802,8 +808,8 @@ namespace BMS_Protocol_Simulator
                     sb.Append(statusByte.ToString("X2"));
 
                     infoData = sb.ToString();
-                    decodedInfo = string.Format("[PYLON-63H System Config] 响应充放电控制: CV={0:F2}V, 截止={1:F2}V, 充电限流={2:F1}A, 放电限流={3:F1}A, 状态=0x{4:X2}(充使能:{5}, 放使能:{6})",
-                        model.CVVoltage, cutoffV, model.MaxChargeCurrent, model.MaxDischargeCurrent, statusByte,
+                    decodedInfo = string.Format("[PYLON-63H System Config] 响应充放电控制: CV={0:F2}V, 截止={1:F2}V, 最大充电电流={2:F1}A, 最大放电电流={3:F1}A, 状态=0x{4:X2}(充使能:{5}, 放使能:{6})",
+                        model.CVVoltage, cutoffV, canCharge ? model.MaxChargeCurrent : 0, canDischarge ? model.MaxDischargeCurrent : 0, statusByte,
                         (statusByte & 0x80) != 0, (statusByte & 0x40) != 0);
                 }
                 else if (cid2 == "64" || cid2 == "95") // 2.5 控制电池组系统关机指令
@@ -1060,7 +1066,7 @@ namespace BMS_Protocol_Simulator
                     if (ushort.TryParse(info.Substring(12, 4), System.Globalization.NumberStyles.HexNumber, null, out uDis10Ma))
                         model.MaxDischargeCurrent = uDis10Ma / 100.0;
 
-                    decodedInfo = string.Format("[PYLON] 解析 63H 成功: CV={0:F2}V, 充电限流={1:F1}A, 放电限流={2:F1}A",
+                    decodedInfo = string.Format("[PYLON] 解析 63H 成功: CV={0:F2}V, 最大充电电流={1:F1}A, 最大放电电流={2:F1}A",
                         model.CVVoltage, model.MaxChargeCurrent, model.MaxDischargeCurrent);
                     return true;
                 }
