@@ -42,6 +42,106 @@ namespace BMS_Protocol_Simulator
         Invalid     // 非法/逻辑矛盾参数 (红框拦截，自动回滚)
     }
 
+    // ── 应用程序图标智能辅助加载与内置渲染器 ──
+    public static class AppIconHelper
+    {
+        private static Icon _cachedIcon;
+
+        public static Icon GetAppIcon()
+        {
+            if (_cachedIcon != null) return _cachedIcon;
+
+            // 1. 优先尝试从本地 app.ico 文件加载
+            try
+            {
+                string iconPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "app.ico");
+                if (File.Exists(iconPath))
+                {
+                    _cachedIcon = new Icon(iconPath);
+                    return _cachedIcon;
+                }
+            }
+            catch { }
+
+            // 2. 尝试从当前可执行文件嵌入的 Win32 PE 资源中提取
+            try
+            {
+                Icon assoc = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+                if (assoc != null)
+                {
+                    _cachedIcon = assoc;
+                    return _cachedIcon;
+                }
+            }
+            catch { }
+
+            // 3. 运行时内存生成后备图标 (暗黑科技蓝盾板 + 绿蓝渐变电芯 + 闪电)
+            try
+            {
+                using (Bitmap bmp = new Bitmap(48, 48))
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+
+                    // 背景卡片
+                    using (SolidBrush bgBrush = new SolidBrush(Color.FromArgb(15, 23, 42)))
+                    using (Pen bgPen = new Pen(Color.FromArgb(56, 189, 248), 2f))
+                    {
+                        System.Drawing.Drawing2D.GraphicsPath path = new System.Drawing.Drawing2D.GraphicsPath();
+                        int r = 10;
+                        path.AddArc(2, 2, r * 2, r * 2, 180, 90);
+                        path.AddArc(46 - r * 2, 2, r * 2, r * 2, 270, 90);
+                        path.AddArc(46 - r * 2, 46 - r * 2, r * 2, r * 2, 0, 90);
+                        path.AddArc(2, 46 - r * 2, r * 2, r * 2, 90, 90);
+                        path.CloseFigure();
+                        g.FillPath(bgBrush, path);
+                        g.DrawPath(bgPen, path);
+                    }
+
+                    // 电池外壳
+                    using (Pen bPen = new Pen(Color.FromArgb(14, 165, 233), 2f))
+                    using (SolidBrush capBrush = new SolidBrush(Color.FromArgb(14, 165, 233)))
+                    {
+                        g.FillRectangle(capBrush, 20, 7, 8, 2);
+                        g.DrawRectangle(bPen, 14, 9, 20, 30);
+                    }
+
+                    // 电芯能量条
+                    using (SolidBrush b1 = new SolidBrush(Color.FromArgb(16, 185, 129)))
+                    using (SolidBrush b2 = new SolidBrush(Color.FromArgb(6, 182, 212)))
+                    using (SolidBrush b3 = new SolidBrush(Color.FromArgb(14, 165, 233)))
+                    {
+                        g.FillRectangle(b1, 16, 31, 16, 6);
+                        g.FillRectangle(b2, 16, 22, 16, 6);
+                        g.FillRectangle(b3, 16, 13, 16, 6);
+                    }
+
+                    // 闪电符号
+                    Point[] bolt = new Point[] {
+                        new Point(27, 10),
+                        new Point(18, 23),
+                        new Point(24, 23),
+                        new Point(20, 37),
+                        new Point(30, 21),
+                        new Point(25, 21)
+                    };
+                    using (SolidBrush boltBrush = new SolidBrush(Color.FromArgb(250, 204, 21)))
+                    {
+                        g.FillPolygon(boltBrush, bolt);
+                    }
+
+                    IntPtr hIcon = bmp.GetHicon();
+                    _cachedIcon = (Icon)Icon.FromHandle(hIcon).Clone();
+                    return _cachedIcon;
+                }
+            }
+            catch { }
+
+            return null;
+        }
+    }
+
     // ── 默认值配置对话框 (支持 3KU 与 6KU 双套系) ──
     public class DefaultConfigDialog : Form
     {
@@ -76,6 +176,13 @@ namespace BMS_Protocol_Simulator
             this.MaximizeBox = false;
             this.MinimizeBox = false;
             this.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular);
+
+            try
+            {
+                Icon icon = AppIconHelper.GetAppIcon();
+                if (icon != null) this.Icon = icon;
+            }
+            catch { }
 
             // ── 顶部套系选择栏 ──
             Panel pnlTop = new Panel { Dock = DockStyle.Top, Height = 48, Padding = new Padding(12, 10, 12, 6) };
@@ -412,6 +519,13 @@ namespace BMS_Protocol_Simulator
             this.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
             this.StartPosition = FormStartPosition.CenterScreen;
             this.BackColor = SystemColors.Control;
+
+            try
+            {
+                Icon icon = AppIconHelper.GetAppIcon();
+                if (icon != null) this.Icon = icon;
+            }
+            catch { }
 
             // ══ 状态栏 ══
             statusStrip = new StatusStrip();

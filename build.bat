@@ -8,7 +8,12 @@ if not exist %CSC% (
     set CSC="C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe"
 )
 
-%CSC% /target:winexe /platform:anycpu /optimize+ /out:"%~dp0BMS_Protocol_Simulator.exe" "%~dp0BmsDataModel.cs" "%~dp0BmsProtocols.cs" "%~dp0SerialCommManager.cs" "%~dp0MainForm.cs"
+set ICON_FLAG=
+if exist "%~dp0app.ico" (
+    set ICON_FLAG=/win32icon:"%~dp0app.ico"
+)
+
+%CSC% /target:winexe /platform:anycpu /optimize+ %ICON_FLAG% /out:"%~dp0BMS_Protocol_Simulator.exe" "%~dp0BmsDataModel.cs" "%~dp0BmsProtocols.cs" "%~dp0SerialCommManager.cs" "%~dp0MainForm.cs"
 
 if %ERRORLEVEL% equ 0 (
     echo [SUCCESS] Build completed! Output: %~dp0BMS_Protocol_Simulator.exe
