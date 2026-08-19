@@ -1094,6 +1094,28 @@ namespace BMS_Protocol_Simulator
 
             ApplyCommittedValueToModel(num);
 
+            if (cboProtocol != null)
+            {
+                if (cboProtocol.SelectedIndex == 0) // CVTE 协议模式提示
+                {
+                    if (num == numCutoffVolt)
+                    {
+                        MessageBox.Show("【协议差异提示】\n\nCVTE Modbus-RTU 协议寄存器表 (0x0020~0x002B) 中未定义【放电截止点】寄存器。\n\n该参数主要由 Pylontech (63H Item 2) 协议传输；CVTE 协议下逆变器依据本地配置或【欠压保护 (UVP)】执行放电截止切断。", "协议参数提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    else if (num == numMaxDisI)
+                    {
+                        MessageBox.Show("【协议差异提示】\n\nCVTE Modbus-RTU 协议仅定义了【最大充电电流 (0x0029)】寄存器，未定义独立的【最大放电电流】限流寄存器。\n\nCVTE 逆变器依据状态字 (0x0020 Bit 5) 的【放电使能】进行放电回路通断控制。", "协议参数提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                }
+                else if (cboProtocol.SelectedIndex == 1) // GROWATT 协议模式提示
+                {
+                    if (num == numCutoffVolt)
+                    {
+                        MessageBox.Show("【协议差异提示】\n\nGrowatt Modbus-RTU 协议寄存器表 (0x0001~0x0029) 中未定义【放电截止点】寄存器 (仅包含 0x0021 CV 充电电压)。\n\nGrowatt 逆变器依据本地配置或 BMS 欠压保护执行放电截止切断。", "协议参数提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                }
+            }
+
             if (level == ValidationLevel.Extreme)
             {
                 // 极限工况: 黄色闪烁 2 秒，允许生效
@@ -1297,15 +1319,37 @@ namespace BMS_Protocol_Simulator
             chkForceChg.CheckedChanged += delegate(object s, EventArgs e) { if (!_isUpdatingUi) _model.StatusForceCharge = chkForceChg.Checked; };
 
             chkFullChg = new CheckBox(); chkFullChg.Text = "请求满充"; chkFullChg.AutoSize = true; chkFullChg.Margin = new Padding(6);
-            chkFullChg.CheckedChanged += delegate(object s, EventArgs e) { if (!_isUpdatingUi) _model.StatusFullCharge = chkFullChg.Checked; };
+            chkFullChg.CheckedChanged += delegate(object s, EventArgs e) {
+                if (!_isUpdatingUi) {
+                    _model.StatusFullCharge = chkFullChg.Checked;
+                    if (chkFullChg.Checked && cboProtocol != null)
+                    {
+                        if (cboProtocol.SelectedIndex == 0) // 0: CVTE
+                        {
+                            MessageBox.Show("【协议差异提示】\n\nCVTE Modbus-RTU 协议状态字 (0x0020) 中未定义【请求满充】标志位。\n\n该标志位为 Pylontech (63H Bit 4) 与 Voltronic (0x0074 Bit 3) 专属。\n在当前 CVTE 协议下勾选此项不会下发至逆变器。", "协议标志位提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        }
+                        else if (cboProtocol.SelectedIndex == 1) // 1: GROWATT
+                        {
+                            MessageBox.Show("【协议差异提示】\n\nGrowatt Modbus-RTU 协议状态字 (0x0013) 中未定义【请求满充】标志位 (仅包含 Bit 12 强制充电请求)。\n\n该标志位为 Pylontech 与 Voltronic 专属。\n在当前 Growatt 协议下勾选此项不会下发至逆变器。", "协议标志位提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        }
+                    }
+                }
+            };
 
             chkBalance = new CheckBox(); chkBalance.Text = "电芯均衡中"; chkBalance.AutoSize = true; chkBalance.Margin = new Padding(6);
             chkBalance.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
                     _model.StatusBalancing = chkBalance.Checked;
-                    if (chkBalance.Checked && cboProtocol != null && cboProtocol.SelectedIndex == 3)
+                    if (chkBalance.Checked && cboProtocol != null)
                     {
-                        MessageBox.Show("【协议差异提示】\n\nPylontech (派能) 低压 RS485 协议标准报文 (61H~63H) 中无独立的【电芯均衡中】状态位。\n\n该状态位为 CVTE 等协议专属 (寄存器 0x0020 Bit 3)。\n在当前 Pylon 协议下仅作仿真器本地状态模拟。", "协议标志位提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        if (cboProtocol.SelectedIndex == 3) // 3: Pylontech
+                        {
+                            MessageBox.Show("【协议差异提示】\n\nPylontech (派能) 低压 RS485 协议标准报文 (61H~63H) 中无独立的【电芯均衡中】状态位。\n\n该状态位为 CVTE (0x0020 Bit 3) 与 Growatt (0x0013 Bit 3) 专属。\n在当前 Pylon 协议下仅作仿真器本地状态模拟。", "协议标志位提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        }
+                        else if (cboProtocol.SelectedIndex == 2) // 2: Voltronic
+                        {
+                            MessageBox.Show("【协议差异提示】\n\nVoltronic 协议充放电状态字 (0x0074) 中无独立的【电芯均衡中】状态位。\n\n该状态位在当前 Voltronic 协议下仅作本地仿真模拟。", "协议标志位提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        }
                     }
                 }
             };
@@ -1314,9 +1358,16 @@ namespace BMS_Protocol_Simulator
             chkSleep.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
                     _model.StatusSleep = chkSleep.Checked;
-                    if (chkSleep.Checked && cboProtocol != null && cboProtocol.SelectedIndex == 3)
+                    if (chkSleep.Checked && cboProtocol != null)
                     {
-                        MessageBox.Show("【协议差异提示】\n\nPylontech (派能) 协议通过 64H 关机指令控制休眠/关机，运行态报文中无【休眠状态】标志位。\n\n该状态位为 CVTE 等协议专属 (寄存器 0x0020 Bit 4)。", "协议标志位提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        if (cboProtocol.SelectedIndex == 3) // 3: Pylontech
+                        {
+                            MessageBox.Show("【协议差异提示】\n\nPylontech (派能) 协议通过 64H 关机指令控制休眠/关机，运行态报文中无【休眠状态】标志位。\n\n该状态位为 CVTE (0x0020 Bit 4) 与 Growatt (0x0013 Bit 4) 专属。", "协议标志位提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        }
+                        else if (cboProtocol.SelectedIndex == 2) // 2: Voltronic
+                        {
+                            MessageBox.Show("【协议差异提示】\n\nVoltronic 协议充放电状态字 (0x0074) 中无【休眠状态】标志位。\n\n该状态位在当前 Voltronic 协议下仅作本地仿真模拟。", "协议标志位提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        }
                     }
                 }
             };
@@ -1356,15 +1407,30 @@ namespace BMS_Protocol_Simulator
             chkWarnLt.CheckedChanged += delegate(object s, EventArgs e) { if (!_isUpdatingUi) _model.WarnLowTemp = chkWarnLt.Checked; };
 
             chkWarnVoltDiff = new CheckBox(); chkWarnVoltDiff.Text = "电芯压差过大"; chkWarnVoltDiff.AutoSize = true; chkWarnVoltDiff.Margin = new Padding(6);
-            chkWarnVoltDiff.CheckedChanged += delegate(object s, EventArgs e) { if (!_isUpdatingUi) _model.WarnVoltDiff = chkWarnVoltDiff.Checked; };
+            chkWarnVoltDiff.CheckedChanged += delegate(object s, EventArgs e) {
+                if (!_isUpdatingUi) {
+                    _model.WarnVoltDiff = chkWarnVoltDiff.Checked;
+                    if (chkWarnVoltDiff.Checked && cboProtocol != null && cboProtocol.SelectedIndex == 2) // 2: Voltronic
+                    {
+                        MessageBox.Show("【协议差异提示】\n\nVoltronic 协议告警矩阵 (0x0060~0x0069) 中未定义独立的【电芯压差过大】告警位。\n\n该状态位在当前 Voltronic 协议下仅作本地仿真模拟。", "协议标志位提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                }
+            };
 
             chkWarnLowCap = new CheckBox(); chkWarnLowCap.Text = "电池低电量告警"; chkWarnLowCap.AutoSize = true; chkWarnLowCap.Margin = new Padding(6);
             chkWarnLowCap.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
                     _model.WarnLowCapacity = chkWarnLowCap.Checked;
-                    if (chkWarnLowCap.Checked && cboProtocol != null && cboProtocol.SelectedIndex == 3)
+                    if (chkWarnLowCap.Checked && cboProtocol != null)
                     {
-                        MessageBox.Show("【协议差异提示】\n\nPylontech (派能) 62H 告警矩阵中未定义独立的【低电量告警】位 (Pylon 通过 61H SOC 或欠压告警表征)。\n\n该状态位为 CVTE 协议专属 (寄存器 0x0028 Bit 6)。", "协议标志位提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        if (cboProtocol.SelectedIndex == 3) // 3: Pylontech
+                        {
+                            MessageBox.Show("【协议差异提示】\n\nPylontech (派能) 62H 告警矩阵中未定义独立的【低电量告警】位 (Pylon 通过 61H SOC 或欠压告警表征)。\n\n该状态位为 CVTE (0x0028 Bit 6) 与 Growatt (0x0022 Bit 13) 专属。", "协议标志位提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        }
+                        else if (cboProtocol.SelectedIndex == 2) // 2: Voltronic
+                        {
+                            MessageBox.Show("【协议差异提示】\n\nVoltronic 协议告警列表中通过欠压状态表征，未定义独立的【低电量告警】位。\n\n该状态位在当前 Voltronic 协议下仅作本地仿真模拟。", "协议标志位提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        }
                     }
                 }
             };
@@ -1435,9 +1501,16 @@ namespace BMS_Protocol_Simulator
             chkProtSoftStart.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
                     _model.ProtSoftStart = chkProtSoftStart.Checked;
-                    if (chkProtSoftStart.Checked && cboProtocol != null && cboProtocol.SelectedIndex == 3)
+                    if (chkProtSoftStart.Checked && cboProtocol != null)
                     {
-                        MessageBox.Show("【协议差异提示】\n\nPylontech (派能) 低压 RS485 协议规范中未定义【软起动失败 (SSP)】保护位。\n\n该标志位为 CVTE 协议专属 (寄存器 0x0027 Bit 8)。\n在当前 Pylon 协议下勾选此项不会下发至逆变器。", "协议标志位提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        if (cboProtocol.SelectedIndex == 3) // 3: Pylontech
+                        {
+                            MessageBox.Show("【协议差异提示】\n\nPylontech (派能) 低压 RS485 协议规范中未定义【软起动失败 (SSP)】保护位。\n\n该标志位为 CVTE (0x0027 Bit 8) 与 Growatt (0x0014 Bit 8) 专属。\n在当前 Pylon 协议下勾选此项不会下发至逆变器。", "协议标志位提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        }
+                        else if (cboProtocol.SelectedIndex == 2) // 2: Voltronic
+                        {
+                            MessageBox.Show("【协议差异提示】\n\nVoltronic 协议告警与状态矩阵 (0x0060~0x0069) 中未定义【软起动失败】保护位。\n\n该标志位在当前 Voltronic 协议下仅作本地仿真模拟。", "协议标志位提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        }
                     }
                 }
             };
