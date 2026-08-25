@@ -119,6 +119,9 @@ namespace BMS_Protocol_Simulator
                     resp[3 + i * 2] = (byte)(val >> 8);
                     resp[3 + i * 2 + 1] = (byte)(val & 0xFF);
                 }
+
+                decodedInfo = string.Format("[CVTE] 应答 ID:{0:X2} 读 0x{1:X4} ({2}寄存器) -> 电压:{3:F2}V, 电流:{4:F2}A, SOC:{5:F0}%, 容量:{6:F1}/{7:F1}Ah, CV:{8:F2}V, 限流:{9:F1}A",
+                    id, regStart, regCount, model.Voltage, model.Current, model.SOC, model.RemainingCapacity, model.FullCapacity, model.CVVoltage, model.MaxChargeCurrent);
             }
 
             ushort crc = ModbusCrc.Calculate(resp, 3 + byteCount);
@@ -126,8 +129,6 @@ namespace BMS_Protocol_Simulator
             resp[3 + byteCount + 1] = (byte)(crc & 0xFF);
 
             txResponse = resp;
-            decodedInfo = string.Format("[CVTE] 应答 ID:{0:X2} 读 0x{1:X4} ({2}寄存器) -> 电压:{3:F2}V, 电流:{4:F2}A, SOC:{5:F0}%, 容量:{6:F1}/{7:F1}Ah, CV:{8:F2}V, 限流:{9:F1}A",
-                id, regStart, regCount, model.Voltage, model.Current, model.SOC, model.RemainingCapacity, model.FullCapacity, model.CVVoltage, model.MaxChargeCurrent);
             return true;
         }
 
@@ -206,7 +207,7 @@ namespace BMS_Protocol_Simulator
                     if (model.ProtShortCircuit) err |= 0x0008;// Bit 3: 短路保护
                     if (model.ProtHighTemp) err |= 0x0010;     // Bit 4: 高温保护
                     if (model.ProtUnderTemp) err |= 0x0020;    // Bit 5: 低温保护
-                    if (model.WarnVoltDiff) err |= 0x0040;     // Bit 6: 压差保护
+                    if (model.ProtSystemFault && model.WarnVoltDiff) err |= 0x0040; // Bit 6: 压差保护
                     if (model.ProtSystemFault) err |= 0x0080;  // Bit 7: 系统故障保护
                     if (model.ProtSoftStart) err |= 0x0100;    // Bit 8: 软启动保护
                     return err;
@@ -382,6 +383,9 @@ namespace BMS_Protocol_Simulator
                     resp[3 + i * 2] = (byte)(val >> 8);
                     resp[3 + i * 2 + 1] = (byte)(val & 0xFF);
                 }
+
+                decodedInfo = string.Format("[GROWATT] 应答 ID:{0:X2} 读 0x{1:X4} ({2}寄存器) -> 电压:{3:F2}V, SOC:{4:F0}%, 电流:{5:F2}A, 温度:{6:F1}°C, CV:{7:F2}V, 限流:{8:F1}A",
+                    id, regStart, regCount, model.Voltage, model.SOC, model.Current, model.Temperature, model.CVVoltage, model.MaxChargeCurrent);
             }
 
             ushort crc = ModbusCrc.Calculate(resp, 3 + byteCount);
@@ -389,8 +393,6 @@ namespace BMS_Protocol_Simulator
             resp[3 + byteCount + 1] = (byte)(crc & 0xFF);
 
             txResponse = resp;
-            decodedInfo = string.Format("[GROWATT] 应答 ID:{0:X2} 读 0x{1:X4} ({2}寄存器) -> 电压:{3:F2}V, SOC:{4:F0}%, 电流:{5:F2}A, 温度:{6:F1}°C, CV:{7:F2}V, 限流:{8:F1}A",
-                id, regStart, regCount, model.Voltage, model.SOC, model.Current, model.Temperature, model.CVVoltage, model.MaxChargeCurrent);
             return true;
         }
 
@@ -656,6 +658,9 @@ namespace BMS_Protocol_Simulator
                     resp[4 + i * 2] = (byte)(val >> 8);
                     resp[4 + i * 2 + 1] = (byte)(val & 0xFF);
                 }
+
+                decodedInfo = string.Format("[VOLTRONIC] 应答 ID:{0:X2} 读 0x{1:X4} ({2}寄存器) -> 电压:{3:F2}V, SOC:{4:F0}%, 电流:{5:F2}A, CV:{6:F2}V, 截止:{7:F2}V, 充限:{8:F1}A, 放限:{9:F1}A",
+                    id, regStart, regCount, model.Voltage, model.SOC, model.Current, model.CVVoltage, model.CutoffVoltage, model.MaxChargeCurrent, model.MaxDischargeCurrent);
             }
 
             ushort crc = ModbusCrc.Calculate(resp, 4 + byteCount);
@@ -663,8 +668,6 @@ namespace BMS_Protocol_Simulator
             resp[4 + byteCount + 1] = (byte)(crc & 0xFF);
 
             txResponse = resp;
-            decodedInfo = string.Format("[VOLTRONIC] 应答 ID:{0:X2} 读 0x{1:X4} ({2}寄存器) -> 电压:{3:F2}V, SOC:{4:F0}%, 电流:{5:F2}A, CV:{6:F2}V, 截止:{7:F2}V, 充限:{8:F1}A, 放限:{9:F1}A",
-                id, regStart, regCount, model.Voltage, model.SOC, model.Current, model.CVVoltage, model.CutoffVoltage, model.MaxChargeCurrent, model.MaxDischargeCurrent);
             return true;
         }
 
@@ -754,9 +757,8 @@ namespace BMS_Protocol_Simulator
                     ushort vStatus = 0;
                     if (model.StatusChargeEnable) vStatus |= (1 << 7);    // Bit 7: Charge enable (1: yes, 0: request stop charge)
                     if (model.StatusDischargeEnable) vStatus |= (1 << 6); // Bit 6: Discharge enable (1: yes, 0: request stop discharge)
-                    if (model.StatusForceCharge || model.SOC <= 9.0) vStatus |= (1 << 5); // Bit 5: Charge immediately (SoC 5~9%)
-                    if (model.SOC > 9.0 && model.SOC <= 14.0) vStatus |= (1 << 4);       // Bit 4: Charge immediately 2 (SoC 10~14%)
-                    if (model.StatusFullCharge) vStatus |= (1 << 3);     // Bit 3: Full charge request
+                    if (model.StatusForceCharge) vStatus |= (1 << 5);     // Bit 5: Charge immediately (强制充电请求)
+                    if (model.StatusFullCharge) vStatus |= (1 << 3);      // Bit 3: Full charge request (满充请求)
                     return vStatus;
 
                 // ── 5. 温度传感器组 (0x0026~0x002F, 0.1K 开尔文温度, PDF Page 4) ──
@@ -947,8 +949,8 @@ namespace BMS_Protocol_Simulator
 
                     // 温度: 绝对开尔文温度 * 10 (Kelvin: 0.1K, e.g. 25.5°C = 25.5*10 + 2731 = 2986)
                     ushort uKelvinAvg = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.Temperature * 10 + 2731)));
-                    ushort uKelvinMax = (ushort)(uKelvinAvg + 5);
-                    ushort uKelvinMin = (ushort)Math.Max(0, uKelvinAvg - 5);
+                    ushort uKelvinMax = (ushort)(uKelvinAvg + (model.WarnHighTemp ? 40 : 5));
+                    ushort uKelvinMin = (ushort)Math.Max(0, uKelvinAvg - (model.WarnLowTemp ? 40 : 5));
 
                     StringBuilder sb = new StringBuilder();
                     sb.Append(((ushort)uVoltMv).ToString("X4"));          // 1. 电池组系统总平均电压 (mV)

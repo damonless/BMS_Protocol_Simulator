@@ -246,6 +246,7 @@ namespace BMS_Protocol_Simulator
                     return;
                 }
 
+                ResultConfig.ActiveProfileName = _currentlyDisplayedProfile;
                 ResultConfig.Profile3KU = _editing3KU;
                 ResultConfig.Profile6KU = _editing6KU;
                 ResultConfig.Save();
@@ -559,7 +560,7 @@ namespace BMS_Protocol_Simulator
 
             FlowLayoutPanel flpTop = new FlowLayoutPanel();
             flpTop.Dock = DockStyle.Fill;
-            flpTop.AutoScroll = false;
+            flpTop.AutoScroll = true;
             flpTop.WrapContents = false;
             flpTop.Padding = new Padding(4, 4, 4, 4);
 
@@ -700,9 +701,9 @@ namespace BMS_Protocol_Simulator
             grid.RowCount = 6;
             grid.ColumnCount = 4;
             grid.Padding = new Padding(4, 4, 4, 4);
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130f));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 145f));
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130f));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 145f));
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
             grid.MouseDown += onBlankMouseDown;
 
@@ -719,11 +720,11 @@ namespace BMS_Protocol_Simulator
 
             // 行 0: 电压 (V) / 电流 (A)
             grid.Controls.Add(createLbl("电池总电压 (V):"), 0, 0);
-            numVoltage = CreateBoundNumeric(2, 0, 100, 0.1M, 28.00M);
+            numVoltage = CreateBoundNumeric(2, 0, 150, 0.1M, 28.00M);
             grid.Controls.Add(numVoltage, 1, 0);
 
             grid.Controls.Add(createLbl("充放电流 (A):"), 2, 0);
-            numCurrent = CreateBoundNumeric(2, -300, 300, 1.0M, 0.00M);
+            numCurrent = CreateBoundNumeric(2, -500, 500, 1.0M, 0.00M);
             grid.Controls.Add(numCurrent, 3, 0);
 
             // 行 1: SOC (%) / SOH (%)
@@ -737,20 +738,20 @@ namespace BMS_Protocol_Simulator
 
             // 行 2: CV 恒压点 (V) / 放电截止点 (V)
             grid.Controls.Add(createLbl("CV 恒压点 (V):"), 0, 2);
-            numCvVolt = CreateBoundNumeric(2, 0, 100, 0.1M, 28.80M);
+            numCvVolt = CreateBoundNumeric(2, 0, 150, 0.1M, 28.80M);
             grid.Controls.Add(numCvVolt, 1, 2);
 
             grid.Controls.Add(createLbl("放电截止点 (V):"), 2, 2);
-            numCutoffVolt = CreateBoundNumeric(2, 0, 100, 0.1M, 21.00M);
+            numCutoffVolt = CreateBoundNumeric(2, 0, 150, 0.1M, 21.00M);
             grid.Controls.Add(numCutoffVolt, 3, 2);
 
             // 行 3: 剩余容量 (Ah) / 满充容量 (Ah)
             grid.Controls.Add(createLbl("剩余容量 (Ah):"), 0, 3);
-            numRemCap = CreateBoundNumeric(1, 0, 2000, 5M, 100M);
+            numRemCap = CreateBoundNumeric(1, 0, 5000, 5M, 100M);
             grid.Controls.Add(numRemCap, 1, 3);
 
             grid.Controls.Add(createLbl("满充容量 (Ah):"), 2, 3);
-            numFullCap = CreateBoundNumeric(1, 0, 2000, 5M, 100M);
+            numFullCap = CreateBoundNumeric(1, 0, 5000, 5M, 100M);
             grid.Controls.Add(numFullCap, 3, 3);
 
             // 行 4: 最大充电电流 (A) / 最大放电电流 (A)
@@ -919,7 +920,7 @@ namespace BMS_Protocol_Simulator
                 Increment = increment,
                 Value = initVal,
                 Width = 110,
-                Anchor = AnchorStyles.Left
+                Anchor = AnchorStyles.Left | AnchorStyles.Right
             };
 
             _committedValues[num] = initVal;
@@ -1092,7 +1093,12 @@ namespace BMS_Protocol_Simulator
             // 3. 电压与 CV 点校验
             else if (num == numVoltage)
             {
-                if (value < 10 || value > 90)
+                if (value <= 0)
+                {
+                    message = "非法输入: 电池总电压必须大于 0V！";
+                    return ValidationLevel.Invalid;
+                }
+                if (value < 10 || value > 140)
                 {
                     message = string.Format("极限工况: 电池总电压 {0:F2}V (属于异常极限欠压/过压测试点)", value);
                     return ValidationLevel.Extreme;
@@ -1182,12 +1188,23 @@ namespace BMS_Protocol_Simulator
                 decimal parsed;
                 if (decimal.TryParse(tb.Text, out parsed))
                 {
-                    if (parsed >= num.Minimum && parsed <= num.Maximum)
+                    if (parsed < num.Minimum || parsed > num.Maximum)
                     {
-                        _isUpdatingUi = true;
-                        num.Value = parsed;
-                        _isUpdatingUi = false;
+                        FlashControlColor(num, Color.FromArgb(254, 202, 202)); // 浅粉红
+                        RollbackNumeric(num);
+                        lblStatusText.Text = string.Format("⛔ 非法输入: 数值 ({0}) 超出允许量程 [{1} ~ {2}]，已自动拦截回滚！", parsed, num.Minimum, num.Maximum);
+                        return;
                     }
+                    _isUpdatingUi = true;
+                    num.Value = parsed;
+                    _isUpdatingUi = false;
+                }
+                else
+                {
+                    FlashControlColor(num, Color.FromArgb(254, 202, 202));
+                    RollbackNumeric(num);
+                    lblStatusText.Text = "⛔ 非法输入: 格式解析失败，已自动拦截回滚！";
+                    return;
                 }
             }
 
@@ -1364,7 +1381,7 @@ namespace BMS_Protocol_Simulator
             mainFlags.RowCount = 3;
             mainFlags.ColumnCount = 1;
             mainFlags.AutoScroll = true;
-            mainFlags.RowStyles.Add(new RowStyle(SizeType.Absolute, 70f));
+            mainFlags.RowStyles.Add(new RowStyle(SizeType.Absolute, 105f));
             mainFlags.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
             mainFlags.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
 
@@ -1380,34 +1397,37 @@ namespace BMS_Protocol_Simulator
             Action refreshChargeDischargeLimits = delegate() {
                 if (!_isUpdatingUi)
                 {
-                    bool canCharge = _model.StatusChargeEnable && !_model.ProtOverVolt && !_model.ProtHighTemp && !_model.ProtSystemFault;
-                    bool canDischarge = _model.StatusDischargeEnable && !_model.ProtUnderVolt && !_model.ProtUnderTemp && !_model.ProtSystemFault;
+                    lock (_model.SyncRoot)
+                    {
+                        bool canCharge = _model.StatusChargeEnable && !_model.ProtOverVolt && !_model.ProtHighTemp && !_model.ProtSystemFault;
+                        bool canDischarge = _model.StatusDischargeEnable && !_model.ProtUnderVolt && !_model.ProtUnderTemp && !_model.ProtSystemFault;
 
-                    _isUpdatingUi = true;
-                    if (!canCharge)
-                    {
-                        if (_model.MaxChargeCurrent > 0) _userConfiguredMaxChgI = _model.MaxChargeCurrent;
-                        _model.MaxChargeCurrent = 0;
-                        UpdateNumericCommitted(numMaxChgI, 0M);
-                    }
-                    else if (_model.MaxChargeCurrent == 0)
-                    {
-                        _model.MaxChargeCurrent = _userConfiguredMaxChgI > 0 ? _userConfiguredMaxChgI : 100.0;
-                        UpdateNumericCommitted(numMaxChgI, (decimal)_model.MaxChargeCurrent);
-                    }
+                        _isUpdatingUi = true;
+                        if (!canCharge)
+                        {
+                            if (_model.MaxChargeCurrent > 0) _userConfiguredMaxChgI = _model.MaxChargeCurrent;
+                            _model.MaxChargeCurrent = 0;
+                            UpdateNumericCommitted(numMaxChgI, 0M);
+                        }
+                        else if (_model.MaxChargeCurrent == 0)
+                        {
+                            _model.MaxChargeCurrent = _userConfiguredMaxChgI > 0 ? _userConfiguredMaxChgI : 100.0;
+                            UpdateNumericCommitted(numMaxChgI, (decimal)_model.MaxChargeCurrent);
+                        }
 
-                    if (!canDischarge)
-                    {
-                        if (_model.MaxDischargeCurrent > 0) _userConfiguredMaxDisI = _model.MaxDischargeCurrent;
-                        _model.MaxDischargeCurrent = 0;
-                        UpdateNumericCommitted(numMaxDisI, 0M);
+                        if (!canDischarge)
+                        {
+                            if (_model.MaxDischargeCurrent > 0) _userConfiguredMaxDisI = _model.MaxDischargeCurrent;
+                            _model.MaxDischargeCurrent = 0;
+                            UpdateNumericCommitted(numMaxDisI, 0M);
+                        }
+                        else if (_model.MaxDischargeCurrent == 0)
+                        {
+                            _model.MaxDischargeCurrent = _userConfiguredMaxDisI > 0 ? _userConfiguredMaxDisI : 100.0;
+                            UpdateNumericCommitted(numMaxDisI, (decimal)_model.MaxDischargeCurrent);
+                        }
+                        _isUpdatingUi = false;
                     }
-                    else if (_model.MaxDischargeCurrent == 0)
-                    {
-                        _model.MaxDischargeCurrent = _userConfiguredMaxDisI > 0 ? _userConfiguredMaxDisI : 100.0;
-                        UpdateNumericCommitted(numMaxDisI, (decimal)_model.MaxDischargeCurrent);
-                    }
-                    _isUpdatingUi = false;
                 }
             };
 
@@ -1415,7 +1435,7 @@ namespace BMS_Protocol_Simulator
             chkChgEn.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi)
                 {
-                    _model.StatusChargeEnable = chkChgEn.Checked;
+                    lock (_model.SyncRoot) { _model.StatusChargeEnable = chkChgEn.Checked; }
                     refreshChargeDischargeLimits();
                 }
             };
@@ -1424,18 +1444,23 @@ namespace BMS_Protocol_Simulator
             chkDisEn.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi)
                 {
-                    _model.StatusDischargeEnable = chkDisEn.Checked;
+                    lock (_model.SyncRoot) { _model.StatusDischargeEnable = chkDisEn.Checked; }
                     refreshChargeDischargeLimits();
                 }
             };
 
             chkForceChg = new CheckBox(); chkForceChg.Text = "请求强制充电"; chkForceChg.AutoSize = true; chkForceChg.Margin = new Padding(6);
-            chkForceChg.CheckedChanged += delegate(object s, EventArgs e) { if (!_isUpdatingUi) _model.StatusForceCharge = chkForceChg.Checked; };
+            chkForceChg.CheckedChanged += delegate(object s, EventArgs e) {
+                if (!_isUpdatingUi)
+                {
+                    lock (_model.SyncRoot) { _model.StatusForceCharge = chkForceChg.Checked; }
+                }
+            };
 
             chkFullChg = new CheckBox(); chkFullChg.Text = "请求满充"; chkFullChg.AutoSize = true; chkFullChg.Margin = new Padding(6);
             chkFullChg.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
-                    _model.StatusFullCharge = chkFullChg.Checked;
+                    lock (_model.SyncRoot) { _model.StatusFullCharge = chkFullChg.Checked; }
                     if (chkFullChg.Checked && cboProtocol != null)
                     {
                         if (cboProtocol.SelectedIndex == 0) // 0: CVTE
@@ -1453,7 +1478,7 @@ namespace BMS_Protocol_Simulator
             chkBalance = new CheckBox(); chkBalance.Text = "电芯均衡中"; chkBalance.AutoSize = true; chkBalance.Margin = new Padding(6);
             chkBalance.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
-                    _model.StatusBalancing = chkBalance.Checked;
+                    lock (_model.SyncRoot) { _model.StatusBalancing = chkBalance.Checked; }
                     if (chkBalance.Checked && cboProtocol != null)
                     {
                         if (cboProtocol.SelectedIndex == 3) // 3: Pylontech
@@ -1471,7 +1496,7 @@ namespace BMS_Protocol_Simulator
             chkSleep = new CheckBox(); chkSleep.Text = "休眠状态"; chkSleep.AutoSize = true; chkSleep.Margin = new Padding(6);
             chkSleep.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
-                    _model.StatusSleep = chkSleep.Checked;
+                    lock (_model.SyncRoot) { _model.StatusSleep = chkSleep.Checked; }
                     if (chkSleep.Checked && cboProtocol != null)
                     {
                         if (cboProtocol.SelectedIndex == 3) // 3: Pylontech
@@ -1500,30 +1525,44 @@ namespace BMS_Protocol_Simulator
             flpWarn.AutoScroll = true;
 
             chkWarnSingleOv = new CheckBox(); chkWarnSingleOv.Text = "单体过压警告"; chkWarnSingleOv.AutoSize = true; chkWarnSingleOv.Margin = new Padding(6);
-            chkWarnSingleOv.CheckedChanged += delegate(object s, EventArgs e) { if (!_isUpdatingUi) _model.WarnSingleOverVolt = chkWarnSingleOv.Checked; };
+            chkWarnSingleOv.CheckedChanged += delegate(object s, EventArgs e) {
+                if (!_isUpdatingUi) { lock (_model.SyncRoot) { _model.WarnSingleOverVolt = chkWarnSingleOv.Checked; } }
+            };
 
             chkWarnSingleUv = new CheckBox(); chkWarnSingleUv.Text = "单体欠压警告"; chkWarnSingleUv.AutoSize = true; chkWarnSingleUv.Margin = new Padding(6);
-            chkWarnSingleUv.CheckedChanged += delegate(object s, EventArgs e) { if (!_isUpdatingUi) _model.WarnSingleUnderVolt = chkWarnSingleUv.Checked; };
+            chkWarnSingleUv.CheckedChanged += delegate(object s, EventArgs e) {
+                if (!_isUpdatingUi) { lock (_model.SyncRoot) { _model.WarnSingleUnderVolt = chkWarnSingleUv.Checked; } }
+            };
 
             chkWarnGlobalOv = new CheckBox(); chkWarnGlobalOv.Text = "组端过压警告"; chkWarnGlobalOv.AutoSize = true; chkWarnGlobalOv.Margin = new Padding(6);
-            chkWarnGlobalOv.CheckedChanged += delegate(object s, EventArgs e) { if (!_isUpdatingUi) _model.WarnGlobalOverVolt = chkWarnGlobalOv.Checked; };
+            chkWarnGlobalOv.CheckedChanged += delegate(object s, EventArgs e) {
+                if (!_isUpdatingUi) { lock (_model.SyncRoot) { _model.WarnGlobalOverVolt = chkWarnGlobalOv.Checked; } }
+            };
 
             chkWarnGlobalUv = new CheckBox(); chkWarnGlobalUv.Text = "组端欠压警告"; chkWarnGlobalUv.AutoSize = true; chkWarnGlobalUv.Margin = new Padding(6);
-            chkWarnGlobalUv.CheckedChanged += delegate(object s, EventArgs e) { if (!_isUpdatingUi) _model.WarnGlobalUnderVolt = chkWarnGlobalUv.Checked; };
+            chkWarnGlobalUv.CheckedChanged += delegate(object s, EventArgs e) {
+                if (!_isUpdatingUi) { lock (_model.SyncRoot) { _model.WarnGlobalUnderVolt = chkWarnGlobalUv.Checked; } }
+            };
 
             chkWarnOc = new CheckBox(); chkWarnOc.Text = "充放电过流警告"; chkWarnOc.AutoSize = true; chkWarnOc.Margin = new Padding(6);
-            chkWarnOc.CheckedChanged += delegate(object s, EventArgs e) { if (!_isUpdatingUi) _model.WarnOverCurrent = chkWarnOc.Checked; };
+            chkWarnOc.CheckedChanged += delegate(object s, EventArgs e) {
+                if (!_isUpdatingUi) { lock (_model.SyncRoot) { _model.WarnOverCurrent = chkWarnOc.Checked; } }
+            };
 
             chkWarnHt = new CheckBox(); chkWarnHt.Text = "高温警告"; chkWarnHt.AutoSize = true; chkWarnHt.Margin = new Padding(6);
-            chkWarnHt.CheckedChanged += delegate(object s, EventArgs e) { if (!_isUpdatingUi) _model.WarnHighTemp = chkWarnHt.Checked; };
+            chkWarnHt.CheckedChanged += delegate(object s, EventArgs e) {
+                if (!_isUpdatingUi) { lock (_model.SyncRoot) { _model.WarnHighTemp = chkWarnHt.Checked; } }
+            };
 
             chkWarnLt = new CheckBox(); chkWarnLt.Text = "低温警告"; chkWarnLt.AutoSize = true; chkWarnLt.Margin = new Padding(6);
-            chkWarnLt.CheckedChanged += delegate(object s, EventArgs e) { if (!_isUpdatingUi) _model.WarnLowTemp = chkWarnLt.Checked; };
+            chkWarnLt.CheckedChanged += delegate(object s, EventArgs e) {
+                if (!_isUpdatingUi) { lock (_model.SyncRoot) { _model.WarnLowTemp = chkWarnLt.Checked; } }
+            };
 
             chkWarnVoltDiff = new CheckBox(); chkWarnVoltDiff.Text = "电芯压差过大"; chkWarnVoltDiff.AutoSize = true; chkWarnVoltDiff.Margin = new Padding(6);
             chkWarnVoltDiff.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
-                    _model.WarnVoltDiff = chkWarnVoltDiff.Checked;
+                    lock (_model.SyncRoot) { _model.WarnVoltDiff = chkWarnVoltDiff.Checked; }
                     if (chkWarnVoltDiff.Checked && cboProtocol != null && cboProtocol.SelectedIndex == 2) // 2: Voltronic
                     {
                         MessageBox.Show("【协议差异提示】\n\nVoltronic 协议告警矩阵 (0x0060~0x0069) 中未定义独立的【电芯压差过大】告警位。\n\n该状态位在当前 Voltronic 协议下仅作本地仿真模拟。", "协议标志位提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -1534,7 +1573,7 @@ namespace BMS_Protocol_Simulator
             chkWarnLowCap = new CheckBox(); chkWarnLowCap.Text = "电池低电量告警"; chkWarnLowCap.AutoSize = true; chkWarnLowCap.Margin = new Padding(6);
             chkWarnLowCap.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
-                    _model.WarnLowCapacity = chkWarnLowCap.Checked;
+                    lock (_model.SyncRoot) { _model.WarnLowCapacity = chkWarnLowCap.Checked; }
                     if (chkWarnLowCap.Checked && cboProtocol != null)
                     {
                         if (cboProtocol.SelectedIndex == 3) // 3: Pylontech
@@ -1568,7 +1607,7 @@ namespace BMS_Protocol_Simulator
             chkProtOv = new CheckBox(); chkProtOv.Text = "总压/单体过压保护"; chkProtOv.AutoSize = true; chkProtOv.Margin = new Padding(6);
             chkProtOv.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
-                    _model.ProtOverVolt = chkProtOv.Checked;
+                    lock (_model.SyncRoot) { _model.ProtOverVolt = chkProtOv.Checked; }
                     refreshChargeDischargeLimits();
                 }
             };
@@ -1576,21 +1615,25 @@ namespace BMS_Protocol_Simulator
             chkProtUv = new CheckBox(); chkProtUv.Text = "总压/单体欠压保护"; chkProtUv.AutoSize = true; chkProtUv.Margin = new Padding(6);
             chkProtUv.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
-                    _model.ProtUnderVolt = chkProtUv.Checked;
+                    lock (_model.SyncRoot) { _model.ProtUnderVolt = chkProtUv.Checked; }
                     refreshChargeDischargeLimits();
                 }
             };
 
             chkProtOc = new CheckBox(); chkProtOc.Text = "过流保护"; chkProtOc.AutoSize = true; chkProtOc.Margin = new Padding(6);
-            chkProtOc.CheckedChanged += delegate(object s, EventArgs e) { if (!_isUpdatingUi) _model.ProtOverCurrent = chkProtOc.Checked; };
+            chkProtOc.CheckedChanged += delegate(object s, EventArgs e) {
+                if (!_isUpdatingUi) { lock (_model.SyncRoot) { _model.ProtOverCurrent = chkProtOc.Checked; } }
+            };
 
             chkProtSc = new CheckBox(); chkProtSc.Text = "输出短路保护"; chkProtSc.AutoSize = true; chkProtSc.Margin = new Padding(6);
-            chkProtSc.CheckedChanged += delegate(object s, EventArgs e) { if (!_isUpdatingUi) _model.ProtShortCircuit = chkProtSc.Checked; };
+            chkProtSc.CheckedChanged += delegate(object s, EventArgs e) {
+                if (!_isUpdatingUi) { lock (_model.SyncRoot) { _model.ProtShortCircuit = chkProtSc.Checked; } }
+            };
 
             chkProtHt = new CheckBox(); chkProtHt.Text = "电芯过温保护"; chkProtHt.AutoSize = true; chkProtHt.Margin = new Padding(6);
             chkProtHt.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
-                    _model.ProtHighTemp = chkProtHt.Checked;
+                    lock (_model.SyncRoot) { _model.ProtHighTemp = chkProtHt.Checked; }
                     refreshChargeDischargeLimits();
                 }
             };
@@ -1598,7 +1641,7 @@ namespace BMS_Protocol_Simulator
             chkProtLt = new CheckBox(); chkProtLt.Text = "电芯低温保护"; chkProtLt.AutoSize = true; chkProtLt.Margin = new Padding(6);
             chkProtLt.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
-                    _model.ProtUnderTemp = chkProtLt.Checked;
+                    lock (_model.SyncRoot) { _model.ProtUnderTemp = chkProtLt.Checked; }
                     refreshChargeDischargeLimits();
                 }
             };
@@ -1606,7 +1649,7 @@ namespace BMS_Protocol_Simulator
             chkProtSys = new CheckBox(); chkProtSys.Text = "BMS系统故障"; chkProtSys.AutoSize = true; chkProtSys.Margin = new Padding(6);
             chkProtSys.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
-                    _model.ProtSystemFault = chkProtSys.Checked;
+                    lock (_model.SyncRoot) { _model.ProtSystemFault = chkProtSys.Checked; }
                     refreshChargeDischargeLimits();
                 }
             };
@@ -1614,7 +1657,7 @@ namespace BMS_Protocol_Simulator
             chkProtSoftStart = new CheckBox(); chkProtSoftStart.Text = "软起动失败"; chkProtSoftStart.AutoSize = true; chkProtSoftStart.Margin = new Padding(6);
             chkProtSoftStart.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
-                    _model.ProtSoftStart = chkProtSoftStart.Checked;
+                    lock (_model.SyncRoot) { _model.ProtSoftStart = chkProtSoftStart.Checked; }
                     if (chkProtSoftStart.Checked && cboProtocol != null)
                     {
                         if (cboProtocol.SelectedIndex == 3) // 3: Pylontech
@@ -1763,7 +1806,7 @@ namespace BMS_Protocol_Simulator
             }
             else
             {
-                if (cboPort.SelectedItem == null || cboPort.SelectedItem.ToString().Contains("无"))
+                if (cboPort.SelectedItem == null || cboPort.SelectedItem.ToString().Contains("无") || cboPort.SelectedItem.ToString().Equals("None", StringComparison.OrdinalIgnoreCase))
                 {
                     MessageBox.Show("请先插入 USB-485 转换器并选择有效串口！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
@@ -1849,6 +1892,19 @@ namespace BMS_Protocol_Simulator
 
             this.BeginInvoke(new Action(delegate()
             {
+                if (this.IsDisposed || rtbLog.IsDisposed) return;
+
+                // 5000 行上限截断保护 (防止长期自动化测试 OOM)
+                if (rtbLog.Lines.Length > 5000)
+                {
+                    int cutCharIndex = rtbLog.GetFirstCharIndexFromLine(1000);
+                    if (cutCharIndex > 0)
+                    {
+                        rtbLog.Select(0, cutCharIndex);
+                        rtbLog.SelectedText = string.Empty;
+                    }
+                }
+
                 string timeStr = e.Timestamp.ToString("HH:mm:ss");
                 string dirStr = e.IsTx ? "TX" : "RX";
 
@@ -1952,6 +2008,7 @@ namespace BMS_Protocol_Simulator
             if (this.IsDisposed || !this.IsHandleCreated) return;
             this.BeginInvoke(new Action(delegate()
             {
+                if (this.IsDisposed) return;
                 lblStatusText.Text = msg;
             }));
         }
@@ -1964,7 +2021,7 @@ namespace BMS_Protocol_Simulator
                 sfd.FileName = string.Format("BMS_Log_{0:yyyyMMdd_HHmmss}.txt", DateTime.Now);
                 if (sfd.ShowDialog() == DialogResult.OK)
                 {
-                    File.WriteAllText(sfd.FileName, rtbLog.Text, Encoding.UTF8);
+                    File.WriteAllText(sfd.FileName, rtbLog.Text, new UTF8Encoding(true));
                     MessageBox.Show("日志已成功保存！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
             }
@@ -1975,11 +2032,27 @@ namespace BMS_Protocol_Simulator
             base.OnShown(e);
             try
             {
-                if (splitMain != null && splitMain.Width > 750)
+                if (splitMain != null && splitMain.Width > (splitMain.Panel1MinSize + splitMain.Panel2MinSize + 20))
                 {
-                    splitMain.SplitterDistance = (int)(splitMain.Width * 0.52);
-                    splitMain.Panel1MinSize = 350;
-                    splitMain.Panel2MinSize = 350;
+                    int targetDist = (int)(splitMain.Width * 0.52);
+                    targetDist = Math.Max(splitMain.Panel1MinSize, Math.Min(targetDist, splitMain.Width - splitMain.Panel2MinSize));
+                    splitMain.SplitterDistance = targetDist;
+                }
+            }
+            catch { }
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            if (this.WindowState == FormWindowState.Minimized) return;
+            try
+            {
+                if (splitMain != null && splitMain.Width > (splitMain.Panel1MinSize + splitMain.Panel2MinSize + 20))
+                {
+                    int targetDist = (int)(splitMain.Width * 0.52);
+                    targetDist = Math.Max(splitMain.Panel1MinSize, Math.Min(targetDist, splitMain.Width - splitMain.Panel2MinSize));
+                    splitMain.SplitterDistance = targetDist;
                 }
             }
             catch { }
