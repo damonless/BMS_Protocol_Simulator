@@ -502,6 +502,15 @@ namespace BMS_Protocol_Simulator
         private StatusStrip statusStrip;
         private ToolStripStatusLabel lblStatusText, lblProtocolBadge;
 
+        // ── 智能机型与协议识别状态横幅 ──
+        private Panel pnlModelMatchBanner;
+        private Label lblBannerIcon;
+        private Label lblBannerText;
+        private Button btnQuickFix;
+        private CheckBox chkAutoAdapt;
+        private ToolTip _bannerTip;
+        private DetectionResult _lastDetectionResult = null;
+
         private bool _isUpdatingUi = false;
 
         public MainForm()
@@ -509,6 +518,7 @@ namespace BMS_Protocol_Simulator
             this.KeyPreview = true;
             this.KeyDown += MainForm_KeyDown;
 
+            _bannerTip = new ToolTip { ShowAlways = true, InitialDelay = 300, AutoPopDelay = 8000 };
             _defaultConfig = BmsDefaultConfig.Load();
             _model = new BmsDataModel();
             _comm = new SerialCommManager(_model);
@@ -516,11 +526,14 @@ namespace BMS_Protocol_Simulator
             _comm.OnStatusChanged += Comm_OnStatusChanged;
             _comm.OnMasterTelemetryUpdated += Comm_OnMasterTelemetryUpdated;
             _comm.OnScanPacksCompleted += Comm_OnScanPacksCompleted;
+            _comm.OnInverterDetected += Comm_OnInverterDetected;
+            _comm.OnAutoAdapted += Comm_OnAutoAdapted;
 
             BuildUI();
             RefreshPorts();
             SyncModelToUI();
             UpdateWorkModeUI();
+            UpdateModelMatchBanner();
         }
 
         private void BuildUI()
@@ -988,12 +1001,101 @@ namespace BMS_Protocol_Simulator
             flpActions.Controls.Add(pnlCombo);
             flpActions.Controls.Add(lblHint);
 
+            chkAutoAdapt = new CheckBox
+            {
+                Text = "🔄 智能自适应识别",
+                AutoSize = true,
+                Checked = false,
+                Margin = new Padding(8, 5, 2, 2),
+                Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular),
+                ForeColor = Color.FromArgb(30, 64, 175)
+            };
+            chkAutoAdapt.CheckedChanged += delegate(object s, EventArgs e) {
+                _comm.AutoAdaptEnabled = chkAutoAdapt.Checked;
+                UpdateModelMatchBanner();
+                if (chkAutoAdapt.Checked)
+                {
+                    lblStatusText.Text = "🔄 智能自适应已开启：收到逆变器报文时将自动匹配机型与协议";
+                }
+            };
+            flpActions.Controls.Add(chkAutoAdapt);
+
             pnlTab.Controls.Add(flpActions, 0, 1);
 
-            // ── 行 2: 底部空白占位区域 ──
-            Panel pnlEmpty = new Panel { Dock = DockStyle.Fill };
-            pnlEmpty.MouseDown += onBlankMouseDown;
-            pnlTab.Controls.Add(pnlEmpty, 0, 2);
+            // ── 行 2: 机型与协议智能诊断 / 警告横幅 ──
+            Panel pnlBannerContainer = new Panel { Dock = DockStyle.Fill, Padding = new Padding(4, 2, 4, 2) };
+            pnlBannerContainer.MouseDown += onBlankMouseDown;
+
+            TableLayoutPanel pnlBannerTable = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                Height = 38,
+                RowCount = 1,
+                ColumnCount = 3,
+                BackColor = Color.FromArgb(248, 249, 250),
+                Padding = new Padding(6, 3, 6, 3),
+                Margin = new Padding(0)
+            };
+            pnlBannerTable.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));          // Col 0: 图标
+            pnlBannerTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));     // Col 1: 提示文本（自适应占据全部剩余空间）
+            pnlBannerTable.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));          // Col 2: 一键纠正按钮（右对齐按需自适应）
+            pnlBannerTable.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            pnlBannerTable.MouseDown += onBlankMouseDown;
+            pnlBannerTable.Paint += delegate(object s, PaintEventArgs e) {
+                using (Pen pen = new Pen(Color.FromArgb(220, 224, 230), 1f))
+                {
+                    e.Graphics.DrawRectangle(pen, 0, 0, pnlBannerTable.Width - 1, pnlBannerTable.Height - 1);
+                }
+            };
+            pnlModelMatchBanner = pnlBannerTable;
+
+            lblBannerIcon = new Label
+            {
+                Text = "○",
+                AutoSize = true,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Font = new Font("Microsoft YaHei UI", 10.5f, FontStyle.Bold),
+                ForeColor = Color.DimGray,
+                Margin = new Padding(2, 0, 4, 0)
+            };
+            lblBannerIcon.MouseDown += onBlankMouseDown;
+
+            lblBannerText = new Label
+            {
+                Text = "串口未连接 (连接后将自动监测机型与协议)",
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoEllipsis = true,
+                Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular),
+                ForeColor = Color.FromArgb(70, 75, 85),
+                Margin = new Padding(2, 0, 4, 0)
+            };
+            lblBannerText.MouseDown += onBlankMouseDown;
+
+            btnQuickFix = new Button
+            {
+                Text = "⚡ 一键纠正",
+                AutoSize = true,
+                Height = 26,
+                Dock = DockStyle.Right,
+                Visible = false,
+                BackColor = Color.FromArgb(239, 68, 68),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Microsoft YaHei UI", 8.5f, FontStyle.Bold),
+                Cursor = Cursors.Hand,
+                Margin = new Padding(4, 1, 2, 1)
+            };
+            btnQuickFix.FlatAppearance.BorderSize = 0;
+            btnQuickFix.Click += BtnQuickFix_Click;
+
+            pnlBannerTable.Controls.Add(lblBannerIcon, 0, 0);
+            pnlBannerTable.Controls.Add(lblBannerText, 1, 0);
+            pnlBannerTable.Controls.Add(btnQuickFix, 2, 0);
+
+            pnlBannerContainer.Controls.Add(pnlBannerTable);
+            pnlTab.Controls.Add(pnlBannerContainer, 0, 2);
 
             parent.Controls.Add(pnlTab);
         }
@@ -1970,6 +2072,7 @@ namespace BMS_Protocol_Simulator
                     break;
             }
             UpdateProtocolBadge();
+            UpdateModelMatchBanner();
         }
 
         private void BtnConnect_Click(object sender, EventArgs e)
@@ -2003,6 +2106,225 @@ namespace BMS_Protocol_Simulator
                     cboBaud.Enabled = false;
                 }
             }
+            UpdateModelMatchBanner();
+        }
+
+        private void UpdateModelMatchBanner()
+        {
+            if (this.IsDisposed || !this.IsHandleCreated) return;
+            if (this.InvokeRequired)
+            {
+                this.BeginInvoke(new Action(UpdateModelMatchBanner));
+                return;
+            }
+
+            if (lblBannerText == null || lblBannerIcon == null || btnQuickFix == null) return;
+
+            if (_comm == null || !_comm.IsOpen)
+            {
+                lblBannerIcon.Text = "○";
+                lblBannerIcon.ForeColor = Color.DimGray;
+                lblBannerText.Text = "串口未连接 (连接后将自动监测机型与协议)";
+                lblBannerText.ForeColor = Color.DimGray;
+                btnQuickFix.Visible = false;
+                pnlModelMatchBanner.BackColor = Color.FromArgb(248, 249, 250);
+                if (_bannerTip != null) _bannerTip.SetToolTip(lblBannerText, "串口未打开。打开串口后，上位机将自动监听并诊断逆变器发送的协议与机型。");
+                return;
+            }
+
+            if (_comm.CurrentWorkMode == WorkMode.MasterPoller)
+            {
+                lblBannerIcon.Text = "📡";
+                lblBannerIcon.ForeColor = Color.FromArgb(30, 64, 175);
+                lblBannerText.Text = "主机轮询模式 (正在主动下发读取指令)";
+                lblBannerText.ForeColor = Color.FromArgb(30, 64, 175);
+                btnQuickFix.Visible = false;
+                pnlModelMatchBanner.BackColor = Color.FromArgb(239, 246, 255);
+                if (_bannerTip != null) _bannerTip.SetToolTip(lblBannerText, "当前处于主机模式，正在按照设定周期主动轮询从机。");
+                return;
+            }
+
+            if (_lastDetectionResult == null || _lastDetectionResult.Protocol == DetectedProtocolType.Unknown)
+            {
+                if (_comm.AutoAdaptEnabled)
+                {
+                    lblBannerIcon.Text = "🔄";
+                    lblBannerIcon.ForeColor = Color.FromArgb(37, 99, 235);
+                    lblBannerText.Text = "智能自适应已就绪: 等待逆变器特征报文...";
+                    lblBannerText.ForeColor = Color.FromArgb(37, 99, 235);
+                    pnlModelMatchBanner.BackColor = Color.FromArgb(239, 246, 255);
+                    if (_bannerTip != null) _bannerTip.SetToolTip(lblBannerText, "智能自适应已开启：接收到逆变器首包特征帧时将自动无缝切换对应协议与机型套系。");
+                }
+                else
+                {
+                    lblBannerIcon.Text = "○";
+                    lblBannerIcon.ForeColor = Color.DimGray;
+                    lblBannerText.Text = "正在监听总线报文 (等待逆变器发送查询...)";
+                    lblBannerText.ForeColor = Color.DimGray;
+                    pnlModelMatchBanner.BackColor = Color.FromArgb(248, 249, 250);
+                    if (_bannerTip != null) _bannerTip.SetToolTip(lblBannerText, "串口已打开，正在监听 485 总线。收到逆变器查询后将自动诊断机型与协议。");
+                }
+                btnQuickFix.Visible = false;
+                return;
+            }
+
+            // 当前 UI 选中的协议
+            string selectedProtStr = cboProtocol.SelectedItem != null ? cboProtocol.SelectedItem.ToString() : "CVTE";
+            DetectedProtocolType currentSelectedProtocol = DetectedProtocolType.Cvte;
+            if (selectedProtStr == "GROWATT") currentSelectedProtocol = DetectedProtocolType.Growatt;
+            else if (selectedProtStr == "VOLTRONIC") currentSelectedProtocol = DetectedProtocolType.Voltronic;
+            else if (selectedProtStr == "PYLONTECH") currentSelectedProtocol = DetectedProtocolType.Pylontech;
+
+            // 当前 UI 选中的套系
+            string currentActiveProfile = _defaultConfig.ActiveProfileName ?? "3KU";
+
+            // 1. 协议不匹配检查
+            if (_lastDetectionResult.Protocol != currentSelectedProtocol)
+            {
+                lblBannerIcon.Text = "✕";
+                lblBannerIcon.ForeColor = Color.FromArgb(185, 28, 28);
+                string detectedProtName = _lastDetectionResult.Protocol.ToString().ToUpper();
+                lblBannerText.Text = string.Format("协议不匹配: 机器为 [{0}]，当前选择 [{1}]", detectedProtName, selectedProtStr);
+                lblBannerText.ForeColor = Color.FromArgb(185, 28, 28); // 红色
+                pnlModelMatchBanner.BackColor = Color.FromArgb(254, 242, 242);
+
+                btnQuickFix.Visible = true;
+                btnQuickFix.Text = string.Format("⚡ 切换为 {0}", detectedProtName);
+                btnQuickFix.Tag = "PROTOCOL:" + detectedProtName;
+                btnQuickFix.BackColor = Color.FromArgb(239, 68, 68);
+
+                string tipStr = string.Format("检测到逆变器正在发送【{0}】协议查询，但当前上位机选为【{1}】。\n点击按钮可一键切换为【{0}】协议并即时恢复正常通信。", detectedProtName, selectedProtStr);
+                if (_bannerTip != null)
+                {
+                    _bannerTip.SetToolTip(lblBannerText, tipStr);
+                    _bannerTip.SetToolTip(btnQuickFix, tipStr);
+                }
+                return;
+            }
+
+            // 2. 机型套系不匹配检查
+            string detectedModelStr = _lastDetectionResult.Model == InverterModel.INV_3KU ? "3KU" : (_lastDetectionResult.Model == InverterModel.INV_6KU ? "6KU" : "未知");
+            if (_lastDetectionResult.Model != InverterModel.Unknown && detectedModelStr != currentActiveProfile)
+            {
+                lblBannerIcon.Text = "⚠";
+                lblBannerIcon.ForeColor = Color.FromArgb(180, 83, 9);
+                lblBannerText.Text = string.Format("套系不一致: 机器为 [{0}]，当前套系为 [{1}]", detectedModelStr, currentActiveProfile);
+                lblBannerText.ForeColor = Color.FromArgb(180, 83, 9); // 橙色
+                pnlModelMatchBanner.BackColor = Color.FromArgb(255, 251, 235);
+
+                btnQuickFix.Visible = true;
+                btnQuickFix.Text = string.Format("⚡ 应用 {0}", detectedModelStr);
+                btnQuickFix.Tag = "MODEL:" + detectedModelStr;
+                btnQuickFix.BackColor = Color.FromArgb(245, 158, 11);
+
+                string tipStr = string.Format("检测到连接机器为【{0}】({1})，但当前所选默认参数为【{2}】。\n点击按钮可一键应用【{0}】默认参数套系。",
+                    detectedModelStr, detectedModelStr == "6KU" ? "48V" : "24V", currentActiveProfile);
+                if (_bannerTip != null)
+                {
+                    _bannerTip.SetToolTip(lblBannerText, tipStr);
+                    _bannerTip.SetToolTip(btnQuickFix, tipStr);
+                }
+                return;
+            }
+
+            // 3. 完全匹配
+            lblBannerIcon.Text = "✓";
+            lblBannerIcon.ForeColor = Color.FromArgb(21, 128, 61);
+            string modelDesc = _lastDetectionResult.Model != InverterModel.Unknown ? ("[" + detectedModelStr + "] ") : "";
+            lblBannerText.Text = string.Format("机型与协议匹配: {0}{1} ({2}) 正常通信", modelDesc, selectedProtStr, currentActiveProfile == "6KU" ? "48V" : "24V");
+            lblBannerText.ForeColor = Color.FromArgb(21, 128, 61); // 绿色
+            pnlModelMatchBanner.BackColor = Color.FromArgb(240, 253, 244);
+            btnQuickFix.Visible = false;
+
+            if (_bannerTip != null)
+            {
+                _bannerTip.SetToolTip(lblBannerText, string.Format("机型与协议完全匹配 ({0}{1})，BMS 数据交互正常。", modelDesc, selectedProtStr));
+            }
+        }
+
+        private void BtnQuickFix_Click(object sender, EventArgs e)
+        {
+            if (btnQuickFix.Tag == null) return;
+            string tag = btnQuickFix.Tag.ToString();
+            if (tag.StartsWith("PROTOCOL:"))
+            {
+                string targetProt = tag.Substring("PROTOCOL:".Length);
+                for (int i = 0; i < cboProtocol.Items.Count; i++)
+                {
+                    if (cboProtocol.Items[i].ToString().Equals(targetProt, StringComparison.OrdinalIgnoreCase))
+                    {
+                        cboProtocol.SelectedIndex = i;
+                        break;
+                    }
+                }
+                lblStatusText.Text = string.Format("✓ 已一键切换协议为: {0}", targetProt);
+            }
+            else if (tag.StartsWith("MODEL:"))
+            {
+                string targetModel = tag.Substring("MODEL:".Length);
+                _defaultConfig = BmsDefaultConfig.Load();
+                _defaultConfig.ActiveProfileName = targetModel;
+                _defaultConfig.Save();
+                if (targetModel == "6KU")
+                    _model.ApplyDefaultConfig(_defaultConfig.Profile6KU);
+                else
+                    _model.ApplyDefaultConfig(_defaultConfig.Profile3KU);
+                SyncModelToUI();
+                CommitAllControls();
+                lblStatusText.Text = string.Format("✓ 已一键应用 [{0}] 默认参数套系", targetModel);
+            }
+            UpdateModelMatchBanner();
+        }
+
+        private void Comm_OnInverterDetected(object sender, DetectionEventArgs e)
+        {
+            _lastDetectionResult = e.Result;
+            UpdateModelMatchBanner();
+        }
+
+        private void Comm_OnAutoAdapted(object sender, AutoAdaptEventArgs e)
+        {
+            if (this.IsDisposed || !this.IsHandleCreated) return;
+            this.BeginInvoke(new Action(delegate()
+            {
+                if (this.IsDisposed) return;
+
+                // 同步 UI 协议选择
+                string targetProtName = e.Protocol.ToString().ToUpper();
+                for (int i = 0; i < cboProtocol.Items.Count; i++)
+                {
+                    if (cboProtocol.Items[i].ToString().Equals(targetProtName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (cboProtocol.SelectedIndex != i)
+                        {
+                            _isUpdatingUi = true;
+                            cboProtocol.SelectedIndex = i;
+                            _isUpdatingUi = false;
+                        }
+                        break;
+                    }
+                }
+
+                // 若识别出机型，同步套系
+                if (e.Model != InverterModel.Unknown)
+                {
+                    string targetModelName = e.Model == InverterModel.INV_3KU ? "3KU" : "6KU";
+                    if (_defaultConfig.ActiveProfileName != targetModelName)
+                    {
+                        _defaultConfig.ActiveProfileName = targetModelName;
+                        _defaultConfig.Save();
+                        if (targetModelName == "6KU")
+                            _model.ApplyDefaultConfig(_defaultConfig.Profile6KU);
+                        else
+                            _model.ApplyDefaultConfig(_defaultConfig.Profile3KU);
+                        SyncModelToUI();
+                        CommitAllControls();
+                    }
+                }
+
+                UpdateModelMatchBanner();
+                lblStatusText.Text = string.Format("🔄 智能自适应生效：已自动匹配为 [{0}] {1}", e.Model != InverterModel.Unknown ? (e.Model == InverterModel.INV_3KU ? "3KU" : "6KU") : "自动", targetProtName);
+            }));
         }
 
         private void SyncModelToUI()

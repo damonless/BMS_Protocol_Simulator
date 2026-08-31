@@ -11,10 +11,10 @@ namespace BMS_Protocol_Simulator
             0xA001, 0x6C00, 0x7800, 0xB401, 0x5000, 0x9C01, 0x8801, 0x4400
         };
 
-        public static ushort Calculate(byte[] data, int length)
+        public static ushort Calculate(byte[] data, int offset, int length)
         {
             ushort crc = 0xFFFF;
-            for (int i = 0; i < length; i++)
+            for (int i = offset; i < offset + length; i++)
             {
                 byte b = data[i];
                 crc = (ushort)(Table[(b ^ crc) & 0x0F] ^ (crc >> 4));
@@ -23,11 +23,16 @@ namespace BMS_Protocol_Simulator
             return (ushort)(((crc & 0xFF) << 8) | ((crc >> 8) & 0xFF));
         }
 
-        public static bool Check(byte[] data, int length)
+        public static ushort Calculate(byte[] data, int length)
         {
-            if (length < 4) return false;
-            ushort expectedCrc = (ushort)((data[length - 2] << 8) | data[length - 1]);
-            ushort calcCrc = Calculate(data, length - 2);
+            return Calculate(data, 0, length);
+        }
+
+        public static bool Check(byte[] data, int length, int offset = 0)
+        {
+            if (length < 4 || data == null || offset + length > data.Length) return false;
+            ushort expectedCrc = (ushort)((data[offset + length - 2] << 8) | data[offset + length - 1]);
+            ushort calcCrc = Calculate(data, offset, length - 2);
             return expectedCrc == calcCrc;
         }
     }
@@ -1811,4 +1816,226 @@ namespace BMS_Protocol_Simulator
             return true;
         }
     }
+
+    #region Inverter & Protocol Classifier (3KU / 6KU 机型与协议智能识别引擎)
+
+    public enum InverterModel
+    {
+        Unknown,
+        INV_3KU,
+        INV_6KU
+    }
+
+    public enum DetectedProtocolType
+    {
+        Unknown,
+        Growatt,
+        Voltronic,
+        Pylontech,
+        Cvte
+    }
+
+    public class DetectionResult
+    {
+        public DetectedProtocolType Protocol { get; set; }
+        public InverterModel Model { get; set; }
+        public string RawSignature { get; set; }
+        public DateTime Timestamp { get; set; }
+        public byte SlaveId { get; set; }
+        public bool IsSignatureConfirmed { get; set; }
+
+        public DetectionResult()
+        {
+            Protocol = DetectedProtocolType.Unknown;
+            Model = InverterModel.Unknown;
+            RawSignature = "";
+            Timestamp = DateTime.Now;
+            SlaveId = 0;
+            IsSignatureConfirmed = false;
+        }
+    }
+
+    public class InverterDetector
+    {
+        private DetectedProtocolType _latchedProtocol = DetectedProtocolType.Unknown;
+        private InverterModel _latchedModel = InverterModel.Unknown;
+        private byte _latchedSlaveId = 0;
+        private DateTime _lastDetectedTime = DateTime.MinValue;
+
+        public DetectedProtocolType LatchedProtocol { get { return _latchedProtocol; } }
+        public InverterModel LatchedModel { get { return _latchedModel; } }
+        public byte LatchedSlaveId { get { return _latchedSlaveId; } }
+        public DateTime LastDetectedTime { get { return _lastDetectedTime; } }
+
+        public void Reset()
+        {
+            _latchedProtocol = DetectedProtocolType.Unknown;
+            _latchedModel = InverterModel.Unknown;
+            _latchedSlaveId = 0;
+            _lastDetectedTime = DateTime.MinValue;
+        }
+
+        public DetectionResult InspectFrame(byte[] buffer, int offset, int length)
+        {
+            if (buffer == null || length < 4) return null;
+
+            // 1. 优先尝试 Modbus RTU 校验 (8 字节标准查询: [ID, 0x03, AddrH, AddrL, LenH, LenL, CrcH, CrcL])
+            if (length >= 8 && buffer[offset + 1] == 0x03 && ModbusCrc.Check(buffer, 8, offset))
+            {
+                byte slaveId = buffer[offset];
+                ushort startReg = (ushort)((buffer[offset + 2] << 8) | buffer[offset + 3]);
+                ushort regCount = (ushort)((buffer[offset + 4] << 8) | buffer[offset + 5]);
+
+                DetectionResult res = new DetectionResult();
+                res.SlaveId = slaveId;
+                res.Timestamp = DateTime.Now;
+                res.RawSignature = string.Format("Modbus RTU: 从机 ID={0}, 起始=0x{1:X4}, 长度={2}", slaveId, startReg, regCount);
+
+                // ── A. 精确专属特征帧识别 (优先级最高) ──
+                if (startReg == 0x0014 && regCount == 15)
+                {
+                    // Growatt 3KU 专属查询: 0x0014 长度 15
+                    res.Protocol = DetectedProtocolType.Growatt;
+                    res.Model = InverterModel.INV_3KU;
+                    res.IsSignatureConfirmed = true;
+                }
+                else if (startReg == 0x0001 && regCount == 35)
+                {
+                    // Growatt 6KU 专属查询: 0x0001 长度 35
+                    res.Protocol = DetectedProtocolType.Growatt;
+                    res.Model = InverterModel.INV_6KU;
+                    res.IsSignatureConfirmed = true;
+                }
+                else if (startReg == 0x0020 && regCount == 12)
+                {
+                    // CVTE 6KU 保持寄存器专属轮询: 0x0020 长度 12
+                    res.Protocol = DetectedProtocolType.Cvte;
+                    res.Model = InverterModel.INV_6KU; // CVTE RS485 仅在 6KU 固件中存在
+                    res.IsSignatureConfirmed = true;
+                }
+                else if (startReg == 0x0040 && regCount == 12)
+                {
+                    // CVTE 6KU 告警保持寄存器轮询: 0x0040 长度 12
+                    res.Protocol = DetectedProtocolType.Cvte;
+                    res.Model = InverterModel.INV_6KU;
+                    res.IsSignatureConfirmed = true;
+                }
+                else if (startReg == 0x0070 && regCount == 3)
+                {
+                    // Voltronic 3KU 第三阶段专属: 0x0070 长度 3
+                    res.Protocol = DetectedProtocolType.Voltronic;
+                    res.Model = InverterModel.INV_3KU;
+                    res.IsSignatureConfirmed = true;
+                }
+                else if (startReg == 0x0070 && regCount == 5)
+                {
+                    // Voltronic 6KU 第三阶段专属: 0x0070 长度 5 (读取 0x0074 状态字)
+                    res.Protocol = DetectedProtocolType.Voltronic;
+                    res.Model = InverterModel.INV_6KU;
+                    res.IsSignatureConfirmed = true;
+                }
+                else if (startReg == 0x0026 && regCount == 10)
+                {
+                    // Voltronic 6KU 第四阶段专属: 0x0026 长度 10 (温度探头)
+                    res.Protocol = DetectedProtocolType.Voltronic;
+                    res.Model = InverterModel.INV_6KU;
+                    res.IsSignatureConfirmed = true;
+                }
+                else if (startReg == 0x0030 && regCount == 6)
+                {
+                    // Voltronic 第一阶段 (3KU 与 6KU 共有)
+                    res.Protocol = DetectedProtocolType.Voltronic;
+                    res.Model = _latchedModel != InverterModel.Unknown ? _latchedModel : InverterModel.Unknown;
+                    res.IsSignatureConfirmed = (_latchedModel != InverterModel.Unknown);
+                }
+                else if (startReg == 0x0060 && regCount == 10)
+                {
+                    // Voltronic 第二阶段 (3KU 与 6KU 共有)
+                    res.Protocol = DetectedProtocolType.Voltronic;
+                    res.Model = _latchedModel != InverterModel.Unknown ? _latchedModel : InverterModel.Unknown;
+                    res.IsSignatureConfirmed = (_latchedModel != InverterModel.Unknown);
+                }
+                // ── B. 次级范围启发式识别 ──
+                else if ((startReg >= 0x0040 && startReg <= 0x005A) || (startReg >= 0x0065 && startReg <= 0x006E))
+                {
+                    res.Protocol = DetectedProtocolType.Cvte;
+                    res.Model = InverterModel.INV_6KU;
+                    res.IsSignatureConfirmed = true;
+                }
+                else if (startReg == 0x0001 || (startReg >= 0x0071 && startReg <= 0x0080))
+                {
+                    res.Protocol = DetectedProtocolType.Growatt;
+                    res.Model = _latchedModel != InverterModel.Unknown ? _latchedModel : InverterModel.Unknown;
+                    res.IsSignatureConfirmed = (_latchedModel != InverterModel.Unknown);
+                }
+                else
+                {
+                    res.Protocol = DetectedProtocolType.Unknown;
+                    res.Model = InverterModel.Unknown;
+                }
+
+                if (res.Protocol != DetectedProtocolType.Unknown)
+                {
+                    _latchedProtocol = res.Protocol;
+                    if (res.Model != InverterModel.Unknown) _latchedModel = res.Model;
+                    _latchedSlaveId = slaveId;
+                    _lastDetectedTime = res.Timestamp;
+                }
+
+                return res;
+            }
+
+            // 2. 尝试 Pylontech ASCII 校验 ('~' 起始，'\r' 结尾)
+            if (buffer[offset] == (byte)'~')
+            {
+                int crIdx = -1;
+                for (int i = offset; i < offset + length; i++)
+                {
+                    if (buffer[i] == 0x0D)
+                    {
+                        crIdx = i;
+                        break;
+                    }
+                }
+
+                if (crIdx > offset)
+                {
+                    int asciiLen = crIdx - offset + 1;
+                    byte[] slice = new byte[asciiLen];
+                    Array.Copy(buffer, offset, slice, 0, asciiLen);
+                    if (PylonChecksum.Verify(slice))
+                    {
+                        string asciiStr = Encoding.ASCII.GetString(slice);
+                        string cid2 = asciiStr.Substring(7, 2).ToUpper();
+                        DetectionResult res = new DetectionResult();
+                        res.Protocol = DetectedProtocolType.Pylontech;
+                        res.Timestamp = DateTime.Now;
+                        res.RawSignature = string.Format("Pylontech ASCII: CID2={0}H", cid2);
+
+                        if (cid2 == "60")
+                        {
+                            // 6KU 专属请求: CID2 60H (协议版本查询)
+                            res.Model = InverterModel.INV_6KU;
+                            res.IsSignatureConfirmed = true;
+                        }
+                        else if (cid2 == "61" || cid2 == "62" || cid2 == "63")
+                        {
+                            res.Model = _latchedModel != InverterModel.Unknown ? _latchedModel : InverterModel.Unknown;
+                            res.IsSignatureConfirmed = (_latchedModel != InverterModel.Unknown);
+                        }
+
+                        _latchedProtocol = res.Protocol;
+                        if (res.Model != InverterModel.Unknown) _latchedModel = res.Model;
+                        _lastDetectedTime = res.Timestamp;
+                        return res;
+                    }
+                }
+            }
+
+            return null;
+        }
+    }
+
+    #endregion
 }
+
