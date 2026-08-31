@@ -101,6 +101,15 @@ namespace BMS_Protocol_Simulator
             if (cmd != 0x03 || regCount == 0 || regCount > 100)
                 return false;
 
+            // CVTE 协议合法寄存器起始地址范围过滤 (防止误响应 Voltronic 0x0030/0x0060/0x0070 或 Growatt 0x0001 len 35 / 0x0014 len 15，使逆变器产生 56 通信丢失告警):
+            bool isValidCvteAddr = (regStart >= 0x0011 && regStart <= 0x0013 && regCount <= 3) ||
+                                   (regStart >= 0x001C && regStart <= 0x001F && regCount <= 4) ||
+                                   (regStart >= 0x0020 && regStart <= 0x002F && regCount <= 16) ||
+                                   (regStart >= 0x0040 && regStart <= 0x005A && regCount <= 27) ||
+                                   (regStart >= 0x0065 && regStart <= 0x006E && regCount <= 10);
+            if (!isValidCvteAddr)
+                return false;
+
             if (!replyAllIds && id != specificId)
             {
                 decodedInfo = string.Format("收到对 ID:{0:X2} 的查询 (已按单包规则忽略)", id);
@@ -123,9 +132,14 @@ namespace BMS_Protocol_Simulator
                     resp[3 + i * 2 + 1] = (byte)(val & 0xFF);
                 }
 
-                decodedInfo = string.Format("[CVTE] 应答 ID:{0:X2} 读 0x{1:X4} ({2}寄存器) -> 电压:{3:F2}V, 电流:{4:F2}A, SOC:{5:F0}%, 容量:{6:F1}/{7:F1}Ah, CV:{8:F2}V, 限流:{9:F1}A",
-                    id, regStart, regCount, model.Voltage, model.Current, model.SOC, model.RemainingCapacity, model.FullCapacity, model.CVVoltage, model.MaxChargeCurrent);
+                string statusTag = "";
+                if (model.HasProtection) statusTag += string.Format(" [保护跳闸: {0}]", model.GetActiveProtectionsSummary());
+                if (model.HasWarning) statusTag += string.Format(" [告警提示: {0}]", model.GetActiveWarningsSummary());
+
+                decodedInfo = string.Format("[CVTE] 应答 ID:{0:X2} 读 0x{1:X4} ({2}寄存器) -> 电压:{3:F2}V, 电流:{4:F2}A, SOC:{5:F0}%, 容量:{6:F1}/{7:F1}Ah, CV:{8:F2}V, 限流:{9:F1}A{10}",
+                    id, regStart, regCount, model.Voltage, model.Current, model.SOC, model.RemainingCapacity, model.FullCapacity, model.CVVoltage, model.MaxChargeCurrent, statusTag);
             }
+
 
             ushort crc = ModbusCrc.Calculate(resp, 3 + byteCount);
             resp[3 + byteCount] = (byte)(crc >> 8);
@@ -300,6 +314,19 @@ namespace BMS_Protocol_Simulator
             get { return 1; }
         }
 
+        public byte[] BuildMasterPollFrame(byte targetId, int pollPhase)
+        {
+            byte[] frame = new byte[8];
+            frame[0] = targetId;
+            frame[1] = 0x03;
+            frame[2] = 0x00; frame[3] = 0x20; // 0x0020
+            frame[4] = 0x00; frame[5] = 0x0D; // 13 寄存器 (0x0020~0x002C 包含循环次数)
+            ushort crc = ModbusCrc.Calculate(frame, 6);
+            frame[6] = (byte)(crc >> 8);
+            frame[7] = (byte)(crc & 0xFF);
+            return frame;
+        }
+
         public byte[] BuildMasterControlFrame(byte targetId, string commandType, object param, out string description)
         {
             ushort regAddr = 0;
@@ -339,19 +366,6 @@ namespace BMS_Protocol_Simulator
             frame[3] = (byte)(regAddr & 0xFF);
             frame[4] = (byte)(regVal >> 8);
             frame[5] = (byte)(regVal & 0xFF);
-            ushort crc = ModbusCrc.Calculate(frame, 6);
-            frame[6] = (byte)(crc >> 8);
-            frame[7] = (byte)(crc & 0xFF);
-            return frame;
-        }
-
-        public byte[] BuildMasterPollFrame(byte targetId, int pollPhase)
-        {
-            byte[] frame = new byte[8];
-            frame[0] = targetId;
-            frame[1] = 0x03;
-            frame[2] = 0x00; frame[3] = 0x20; // 0x0020
-            frame[4] = 0x00; frame[5] = 0x0D; // 13 寄存器 (0x0020~0x002C 包含循环次数)
             ushort crc = ModbusCrc.Calculate(frame, 6);
             frame[6] = (byte)(crc >> 8);
             frame[7] = (byte)(crc & 0xFF);
@@ -472,6 +486,15 @@ namespace BMS_Protocol_Simulator
             if (cmd != 0x03 || regCount == 0 || regCount > 120)
                 return false;
 
+            // Growatt 协议合法寄存器起始地址范围过滤 (严格限定古瑞瓦特协议定义的轮询分段，防止误响应 Voltronic 0x0030/0x0060/0x0070 或 CVTE 0x0020 len 12，使逆变器产生 56 通信丢失告警):
+            bool isValidGrowattAddr = (regStart == 0x0001 && regCount <= 35) ||
+                                      (regStart >= 0x0010 && regStart <= 0x0014 && regCount <= 20) ||
+                                      (regStart >= 0x0015 && regStart <= 0x0029 && regCount <= 2) ||
+                                      (regStart == 0x0071 && regCount <= 16);
+            if (!isValidGrowattAddr)
+                return false;
+
+
             if (!replyAllIds && id != specificId)
                 return false;
 
@@ -491,8 +514,12 @@ namespace BMS_Protocol_Simulator
                     resp[3 + i * 2 + 1] = (byte)(val & 0xFF);
                 }
 
-                decodedInfo = string.Format("[GROWATT] 应答 ID:{0:X2} 读 0x{1:X4} ({2}寄存器) -> 电压:{3:F2}V, SOC:{4:F0}%, 电流:{5:F2}A, 温度:{6:F1}°C, CV:{7:F2}V, 限流:{8:F1}A",
-                    id, regStart, regCount, model.Voltage, model.SOC, model.Current, model.Temperature, model.CVVoltage, model.MaxChargeCurrent);
+                string statusTag = "";
+                if (model.HasProtection) statusTag += string.Format(" [保护跳闸: {0}]", model.GetActiveProtectionsSummary());
+                if (model.HasWarning) statusTag += string.Format(" [告警提示: {0}]", model.GetActiveWarningsSummary());
+
+                decodedInfo = string.Format("[GROWATT] 应答 ID:{0:X2} 读 0x{1:X4} ({2}寄存器) -> 电压:{3:F2}V, SOC:{4:F0}%, 电流:{5:F2}A, 温度:{6:F1}°C, CV:{7:F2}V, 限流:{8:F1}A{9}",
+                    id, regStart, regCount, model.Voltage, model.SOC, model.Current, model.Temperature, model.CVVoltage, model.MaxChargeCurrent, statusTag);
             }
 
             ushort crc = ModbusCrc.Calculate(resp, 3 + byteCount);
@@ -537,38 +564,32 @@ namespace BMS_Protocol_Simulator
                     else if (model.Current < -0.05) status |= 0x0003; // 11: discharging
                     else status |= 0x0001;                            // 01: stand by
 
-                    if (model.ProtOverVolt || model.ProtUnderVolt || model.ProtOverCurrent ||
-                        model.ProtShortCircuit || model.ProtHighTemp || model.ProtUnderTemp ||
-                        model.ProtSystemFault || model.ProtSoftStart)
+                    if (model.HasProtection)
                     {
                         status |= (1 << 2); // Bit 2: Error bit flag
                     }
                     if (model.StatusBalancing) status |= (1 << 3);      // Bit 3: Cell balance PF status
                     if (model.StatusSleep) status |= (1 << 4);          // Bit 4: Sleep status
-                    if (model.StatusDischargeEnable) status |= (1 << 5);// Bit 5: Output Discharge status
-                    if (model.StatusChargeEnable) status |= (1 << 6);   // Bit 6: Output Charge status
-                    // Bit 7: 0: terminal connected
-                    // Bit 8~9: 00: 单机
+
+                    bool canGwDis = model.StatusDischargeEnable && !model.ProtUnderVolt && !model.ProtUnderTemp && !model.ProtSystemFault;
+                    bool canGwChg = model.StatusChargeEnable && !model.ProtOverVolt && !model.ProtHighTemp && !model.ProtSystemFault;
+                    if (canGwDis) status |= (1 << 5);// Bit 5: Output Discharge status
+                    if (canGwChg) status |= (1 << 6);// Bit 6: Output Charge status
+
                     if (model.StatusForceCharge) status |= (1 << 12);   // Bit 12: Request force charge
                     return status;
 
                 case 0x0014: // Error Code (PDF Page 8, 10-11)
                     ushort err = 0;
-                    if (model.ProtOverCurrent && model.Current <= 0) err |= (1 << 0);  // Bit 0: OCD (Over Current Discharge)
-                    if (model.ProtShortCircuit) err |= (1 << 1);                      // Bit 1: SCD (Short Circuit Discharge)
-                    if (model.ProtOverVolt) err |= (1 << 2);                          // Bit 2: OV (Over Voltage)
-                    if (model.ProtUnderVolt) err |= (1 << 3);                         // Bit 3: UV (Under Voltage)
-                    if (model.ProtHighTemp && model.Current <= 0) err |= (1 << 4);    // Bit 4: OTD (Over Temperature Discharge)
-                    if (model.ProtHighTemp && model.Current > 0) err |= (1 << 5);     // Bit 5: OTC (Over Temperature Charge)
-                    if (model.ProtUnderTemp && model.Current <= 0) err |= (1 << 6);   // Bit 6: UTD (Under Temperature Discharge)
-                    if (model.ProtUnderTemp && model.Current > 0) err |= (1 << 7);    // Bit 7: UTC (Under Temperature Charge)
-                    if (model.ProtSoftStart) err |= (1 << 8);                         // Bit 8: Soft start fail
-                    if (model.ProtSystemFault) err |= (1 << 9);                       // Bit 9: Permanent Fault
-                    if (model.WarnVoltDiff) err |= (1 << 10);                         // Bit 10: Delta V Fail
-                    if (model.ProtOverCurrent && model.Current > 0) err |= (1 << 11); // Bit 11: OCC (Over Current Charge)
-                    if (model.ProtHighTemp) err |= (1 << 12);                         // Bit 12: OT (MOS Over Temperature)
-                    if (model.ProtHighTemp) err |= (1 << 13);                         // Bit 13: OT (Environment Over Temperature)
-                    if (model.ProtUnderTemp) err |= (1 << 14);                        // Bit 14: UT (Environment Under Temperature)
+                    if (model.ProtOverCurrent) { err |= (1 << 0); err |= (1 << 11); }  // Bit 0: OCD (放电过流), Bit 11: OCC (充电过流)
+                    if (model.ProtShortCircuit) { err |= (1 << 1); err |= (1 << 3); } // Bit 1: SCD (放电短路)
+                    if (model.ProtOverVolt) err |= (1 << 2);                          // Bit 2: OV (总压/单体过压)
+                    if (model.ProtUnderVolt) err |= (1 << 3);                         // Bit 3: UV (总压/单体欠压)
+                    if (model.ProtHighTemp) { err |= (1 << 4); err |= (1 << 5); err |= (1 << 12); err |= (1 << 13); } // Bit 4: OTD, Bit 5: OTC, Bit 12: MOS OT, Bit 13: 环境 OT (3KU检测0x0030, 6KU全检测)
+                    if (model.ProtUnderTemp) { err |= (1 << 6); err |= (1 << 7); err |= (1 << 14); } // Bit 6: UTD, Bit 7: UTC, Bit 14: 环境 UT (3KU检测0x00C0, 6KU全检测)
+                    if (model.ProtSoftStart) err |= (1 << 8);                         // Bit 8: Soft start fail (软启动失败)
+                    if (model.ProtSystemFault) err |= (1 << 9);                       // Bit 9: Permanent Fault (永久故障)
+                    if (model.WarnVoltDiff) err |= (1 << 10);                         // Bit 10: Delta V Fail (压差故障)
                     return err;
 
                 case 0x0015: // SOC (1%, PDF Page 8)
@@ -621,18 +642,13 @@ namespace BMS_Protocol_Simulator
                     if (model.WarnSingleUnderVolt) warn |= (1 << 1); // Bit 1: 单体欠压告警
                     if (model.WarnGlobalOverVolt) warn |= (1 << 2);  // Bit 2: 总压过压告警
                     if (model.WarnGlobalUnderVolt) warn |= (1 << 3); // Bit 3: 总压欠压告警
-                    if (model.WarnOverCurrent && model.Current <= 0) warn |= (1 << 4); // Bit 4: 放电过流告警
-                    if (model.WarnOverCurrent && model.Current > 0) warn |= (1 << 5);  // Bit 5: 充电过流告警
-                    if (model.WarnHighTemp && model.Current <= 0) warn |= (1 << 6);    // Bit 6: 放电高温告警
-                    if (model.WarnLowTemp && model.Current <= 0) warn |= (1 << 7);     // Bit 7: 放电低温告警
-                    if (model.WarnHighTemp && model.Current > 0) warn |= (1 << 8);     // Bit 8: 充电高温告警
-                    if (model.WarnLowTemp && model.Current > 0) warn |= (1 << 9);      // Bit 9: 充电低温告警
-                    if (model.WarnHighTemp) warn |= (1 << 10);                        // Bit 10: MOS高温告警
-                    if (model.WarnHighTemp) warn |= (1 << 11);                        // Bit 11: 环境高温告警
-                    if (model.WarnLowTemp) warn |= (1 << 12);                         // Bit 12: 环境低温告警
+                    if (model.WarnOverCurrent) { warn |= (1 << 4); warn |= (1 << 5); } // Bit 4: 放电过流告警, Bit 5: 充电过流告警 (3KU检测0x0030)
+                    if (model.WarnHighTemp) { warn |= (1 << 6); warn |= (1 << 8); warn |= (1 << 10); warn |= (1 << 11); } // Bit 6,8,10,11: 充放电/MOS/环境高温告警 (3KU检测0x0D40)
+                    if (model.WarnLowTemp) { warn |= (1 << 7); warn |= (1 << 9); warn |= (1 << 12); } // Bit 7,9,12: 充放电/环境低温告警 (3KU检测0x0128)
                     if (model.WarnLowCapacity) warn |= (1 << 13);                     // Bit 13: 系统低压关机前告警
                     // Bit 14~15: 电池类型 00: 磷酸铁锂电池
                     return warn;
+
 
                 case 0x0023: // Max Discharge Current (10mA, 正值, PDF Page 9)
                     if (!model.StatusDischargeEnable || model.ProtUnderVolt || model.ProtUnderTemp || model.ProtSystemFault)
@@ -677,6 +693,19 @@ namespace BMS_Protocol_Simulator
         public int MasterPollPhaseCount
         {
             get { return 1; }
+        }
+
+        public byte[] BuildMasterPollFrame(byte targetId, int pollPhase)
+        {
+            byte[] frame = new byte[8];
+            frame[0] = targetId;
+            frame[1] = 0x03;
+            frame[2] = 0x00; frame[3] = 0x13; // 0x0013 (从状态字开始读)
+            frame[4] = 0x00; frame[5] = 0x11; // 17 寄存器 (0x0013~0x0023 覆盖状态、告警、模拟量与充放电限流)
+            ushort crc = ModbusCrc.Calculate(frame, 6);
+            frame[6] = (byte)(crc >> 8);
+            frame[7] = (byte)(crc & 0xFF);
+            return frame;
         }
 
         public byte[] BuildMasterControlFrame(byte targetId, string commandType, object param, out string description)
@@ -725,19 +754,6 @@ namespace BMS_Protocol_Simulator
             frame[3] = (byte)(regAddr & 0xFF);
             frame[4] = (byte)(regVal >> 8);
             frame[5] = (byte)(regVal & 0xFF);
-            ushort crc = ModbusCrc.Calculate(frame, 6);
-            frame[6] = (byte)(crc >> 8);
-            frame[7] = (byte)(crc & 0xFF);
-            return frame;
-        }
-
-        public byte[] BuildMasterPollFrame(byte targetId, int pollPhase)
-        {
-            byte[] frame = new byte[8];
-            frame[0] = targetId;
-            frame[1] = 0x03;
-            frame[2] = 0x00; frame[3] = 0x13; // 0x0013 (从状态字开始读)
-            frame[4] = 0x00; frame[5] = 0x11; // 17 寄存器 (0x0013~0x0023 覆盖状态、告警、模拟量与充放电限流)
             ushort crc = ModbusCrc.Calculate(frame, 6);
             frame[6] = (byte)(crc >> 8);
             frame[7] = (byte)(crc & 0xFF);
@@ -860,6 +876,19 @@ namespace BMS_Protocol_Simulator
             ushort regCount = (ushort)((rxBuffer[4] << 8) | rxBuffer[5]);
 
             if (cmd != 0x03 || regCount == 0 || regCount > 100) return false;
+
+            // Voltronic 协议合法寄存器起始地址范围过滤 (严格限定日月元协议定义的轮询分段，防止误响应 Growatt 0x0001 len 35 / 0x0014 len 15 或 CVTE 0x0020 len 12，使逆变器产生 56 通信丢失告警):
+            bool isValidVoltronicAddr = (regStart == 0x0030 && regCount <= 6) ||
+                                        (regStart == 0x0060 && regCount <= 10) ||
+                                        (regStart == 0x0070 && regCount <= 5) ||
+                                        (regStart == 0x0026 && regCount <= 10) ||
+                                        (regStart == 0x0001 && regCount <= 2) ||
+                                        (regStart == 0x0010 && regCount == 1) ||
+                                        (regStart == 0x0011 && regCount <= 16);
+            if (!isValidVoltronicAddr)
+                return false;
+
+
             if (!replyAllIds && id != specificId) return false;
 
             // 日月元 (Voltronic) 485 协议响应帧规范:
@@ -882,8 +911,12 @@ namespace BMS_Protocol_Simulator
                     resp[4 + i * 2 + 1] = (byte)(val & 0xFF);
                 }
 
-                decodedInfo = string.Format("[VOLTRONIC] 应答 ID:{0:X2} 读 0x{1:X4} ({2}寄存器) -> 电压:{3:F2}V, SOC:{4:F0}%, 电流:{5:F2}A, CV:{6:F2}V, 截止:{7:F2}V, 充限:{8:F1}A, 放限:{9:F1}A",
-                    id, regStart, regCount, model.Voltage, model.SOC, model.Current, model.CVVoltage, model.CutoffVoltage, model.MaxChargeCurrent, model.MaxDischargeCurrent);
+                string statusTag = "";
+                if (model.HasProtection) statusTag += string.Format(" [保护跳闸: {0}]", model.GetActiveProtectionsSummary());
+                if (model.HasWarning) statusTag += string.Format(" [告警提示: {0}]", model.GetActiveWarningsSummary());
+
+                decodedInfo = string.Format("[VOLTRONIC] 应答 ID:{0:X2} 读 0x{1:X4} ({2}寄存器) -> 电压:{3:F2}V, SOC:{4:F0}%, 电流:{5:F2}A, CV:{6:F2}V, 截止:{7:F2}V, 充限:{8:F1}A, 放限:{9:F1}A{10}",
+                    id, regStart, regCount, model.Voltage, model.SOC, model.Current, model.CVVoltage, model.CutoffVoltage, model.MaxChargeCurrent, model.MaxDischargeCurrent, statusTag);
             }
 
             ushort crc = ModbusCrc.Calculate(resp, 4 + byteCount);
@@ -978,11 +1011,14 @@ namespace BMS_Protocol_Simulator
 
                 case 0x0074: // Charge, discharge status (PDF Page 5-6)
                     ushort vStatus = 0;
-                    if (model.StatusChargeEnable) vStatus |= (1 << 7);    // Bit 7: Charge enable (1: yes, 0: request stop charge)
-                    if (model.StatusDischargeEnable) vStatus |= (1 << 6); // Bit 6: Discharge enable (1: yes, 0: request stop discharge)
+                    bool canVChg = model.StatusChargeEnable && !model.ProtOverVolt && !model.ProtHighTemp && !model.ProtSystemFault;
+                    bool canVDis = model.StatusDischargeEnable && !model.ProtUnderVolt && !model.ProtUnderTemp && !model.ProtSystemFault;
+                    if (canVChg) vStatus |= (1 << 7);    // Bit 7: Charge enable (1: yes, 0: request stop charge)
+                    if (canVDis) vStatus |= (1 << 6);    // Bit 6: Discharge enable (1: yes, 0: request stop discharge)
                     if (model.StatusForceCharge) vStatus |= (1 << 5);     // Bit 5: Charge immediately (强制充电请求)
                     if (model.StatusFullCharge) vStatus |= (1 << 3);      // Bit 3: Full charge request (满充请求)
                     return vStatus;
+
 
                 // ── 5. 温度传感器组 (0x0026~0x002F, 0.1K 开尔文温度, PDF Page 4) ──
                 default:
@@ -1007,6 +1043,29 @@ namespace BMS_Protocol_Simulator
         public int MasterPollPhaseCount
         {
             get { return 3; }
+        }
+
+        public byte[] BuildMasterPollFrame(byte targetId, int pollPhase)
+        {
+            byte[] frame = new byte[8];
+            frame[0] = targetId;
+            frame[1] = 0x03;
+            if (pollPhase == 0)
+            {
+                frame[2] = 0x00; frame[3] = 0x30; frame[4] = 0x00; frame[5] = 0x06; // 0x0030~0x0035 实时充放电流/总压/SOC/总容量
+            }
+            else if (pollPhase == 1)
+            {
+                frame[2] = 0x00; frame[3] = 0x60; frame[4] = 0x00; frame[5] = 0x0A; // 0x0060~0x0069 组端与单体告警/保护矩阵
+            }
+            else
+            {
+                frame[2] = 0x00; frame[3] = 0x70; frame[4] = 0x00; frame[5] = 0x05; // 0x0070~0x0074 CV/截止点/最大充放限流/状态字
+            }
+            ushort crc = ModbusCrc.Calculate(frame, 6);
+            frame[6] = (byte)(crc >> 8);
+            frame[7] = (byte)(crc & 0xFF);
+            return frame;
         }
 
         public byte[] BuildMasterControlFrame(byte targetId, string commandType, object param, out string description)
@@ -1062,29 +1121,6 @@ namespace BMS_Protocol_Simulator
             frame[3] = (byte)(regAddr & 0xFF);
             frame[4] = (byte)(regVal >> 8);
             frame[5] = (byte)(regVal & 0xFF);
-            ushort crc = ModbusCrc.Calculate(frame, 6);
-            frame[6] = (byte)(crc >> 8);
-            frame[7] = (byte)(crc & 0xFF);
-            return frame;
-        }
-
-        public byte[] BuildMasterPollFrame(byte targetId, int pollPhase)
-        {
-            byte[] frame = new byte[8];
-            frame[0] = targetId;
-            frame[1] = 0x03;
-            if (pollPhase == 0)
-            {
-                frame[2] = 0x00; frame[3] = 0x30; frame[4] = 0x00; frame[5] = 0x06; // 0x0030~0x0035 实时充放电流/总压/SOC/总容量
-            }
-            else if (pollPhase == 1)
-            {
-                frame[2] = 0x00; frame[3] = 0x60; frame[4] = 0x00; frame[5] = 0x0A; // 0x0060~0x0069 组端与单体告警/保护矩阵
-            }
-            else
-            {
-                frame[2] = 0x00; frame[3] = 0x70; frame[4] = 0x00; frame[5] = 0x05; // 0x0070~0x0074 CV/截止点/最大充放限流/状态字
-            }
             ushort crc = ModbusCrc.Calculate(frame, 6);
             frame[6] = (byte)(crc >> 8);
             frame[7] = (byte)(crc & 0xFF);
@@ -1308,50 +1344,49 @@ namespace BMS_Protocol_Simulator
                     sb.Append("0001");                                    // 26. BMS 最低温度所在模块
 
                     infoData = sb.ToString();
-                    decodedInfo = string.Format("[PYLON-61H System Analog] 应答系统模拟量: 总压={0:F2}V, 电流={1:F2}A, SOC={2:F0}%, SOH={3:F0}%, 温度={4:F1}°C, 单芯={5}串({6}mV)",
-                        model.Voltage, model.Current, model.SOC, model.SOH, model.Temperature, cellCount, cellVoltMv);
+                    string statusTag61 = "";
+                    if (model.HasProtection) statusTag61 += string.Format(" [保护跳闸: {0}]", model.GetActiveProtectionsSummary());
+                    if (model.HasWarning) statusTag61 += string.Format(" [告警提示: {0}]", model.GetActiveWarningsSummary());
+
+                    decodedInfo = string.Format("[PYLON-61H System Analog] 应答系统模拟量: 总压={0:F2}V, 电流={1:F2}A, SOC={2:F0}%, SOH={3:F0}%, 温度={4:F1}°C, 单芯={5}串({6}mV){7}",
+                        model.Voltage, model.Current, model.SOC, model.SOH, model.Temperature, cellCount, cellVoltMv, statusTag61);
                 }
                 else if (cid2 == "62") // 2.3 获取电池组系统状态告警量信息 (Page 17-18, 4字节 / 8 HEX字符)
                 {
                     byte warn1 = 0;
-                    if (model.WarnGlobalOverVolt) warn1 |= 0x80;  // Bit 7: 模块总压高压
-                    if (model.WarnGlobalUnderVolt) warn1 |= 0x40; // Bit 6: 模块总压低压
-                    if (model.WarnSingleOverVolt) warn1 |= 0x20;  // Bit 5: 单芯电压高压
-                    if (model.WarnSingleUnderVolt) warn1 |= 0x10; // Bit 4: 单芯电压低压
-                    if (model.WarnHighTemp) warn1 |= 0x08;        // Bit 3: 单芯温度高温
-                    if (model.WarnLowTemp) warn1 |= 0x04;         // Bit 2: 单芯温度低温
-                    if (model.WarnHighTemp) warn1 |= 0x02;        // Bit 1: MOSFET 高温
-                    if (model.WarnVoltDiff) warn1 |= 0x01;        // Bit 0: 单芯电压一致性告警
+                    if (model.WarnGlobalOverVolt) warn1 |= (0x80 | 0x20);  // Bit 7: 模块总压高压, Bit 5: 单芯电压高压 (兼容3KU/6KU)
+                    if (model.WarnGlobalUnderVolt) warn1 |= (0x40 | 0x10); // Bit 6: 模块总压低压, Bit 4: 单芯电压低压
+                    if (model.WarnSingleOverVolt) warn1 |= (0x40 | 0x20);  // 兼容3KU 0x4000 及 6KU 0x2000 校验
+                    if (model.WarnSingleUnderVolt) warn1 |= (0x10 | 0x40); // 兼容3KU 0x1000 及 6KU 0x1000 校验
+                    if (model.WarnHighTemp) warn1 |= (0x08 | 0x02);        // Bit 3: 单芯高温, Bit 1: MOSFET 高温 (3KU检测0x0900)
+                    if (model.WarnLowTemp) warn1 |= 0x04;                  // Bit 2: 单芯低温 (3KU检测0x0400)
+                    if (model.WarnVoltDiff) warn1 |= 0x01;                 // Bit 0: 单芯电压一致性告警
 
                     byte warn2 = 0;
-                    if (model.WarnVoltDiff) warn2 |= 0x80;        // Bit 7: 单芯温度一致性告警
-                    if (model.WarnOverCurrent && model.Current >= 0) warn2 |= 0x40; // Bit 6: 充电过流告警
-                    if (model.WarnOverCurrent && model.Current < 0) warn2 |= 0x20;  // Bit 5: 放电过流告警
-                    if (model.ProtSystemFault) warn2 |= 0x10;     // Bit 4: 内部通信错误
+                    if (model.WarnVoltDiff) warn2 |= 0x80;                 // Bit 7: 单芯温度一致性告警
+                    if (model.WarnOverCurrent) warn2 |= (0x40 | 0x20);     // Bit 6: 充电过流, Bit 5: 放电过流 (3KU检测0x0060)
+                    if (model.ProtSystemFault) warn2 |= 0x10;              // Bit 4: 内部通信错误
 
                     byte prot1 = 0;
-                    if (model.ProtOverVolt) prot1 |= 0x80;        // Bit 7: 模块总压过压
-                    if (model.ProtUnderVolt) prot1 |= 0x40;       // Bit 6: 模块总压欠压
-                    if (model.ProtOverVolt) prot1 |= 0x20;        // Bit 5: 单芯电压过压
-                    if (model.ProtUnderVolt) prot1 |= 0x10;       // Bit 4: 单芯电压欠压
-                    if (model.ProtHighTemp) prot1 |= 0x08;        // Bit 3: 单芯温度过温
-                    if (model.ProtUnderTemp) prot1 |= 0x04;       // Bit 2: 单芯温度欠温
-                    if (model.ProtHighTemp) prot1 |= 0x02;        // Bit 1: MOSFET 过温
+                    if (model.ProtOverVolt) prot1 |= (0x80 | 0x20);        // 0xA0: 模块总压/单芯过压保护 (3KU检测0xA000)
+                    if (model.ProtUnderVolt) prot1 |= (0x40 | 0x10);       // 0x50: 模块总压/单芯欠压保护 (3KU检测0x5000)
+                    if (model.ProtHighTemp) prot1 |= (0x08 | 0x02);        // 0x0A: 单芯/MOSFET过温保护 (3KU检测0x0A00)
+                    if (model.ProtUnderTemp) prot1 |= 0x04;                // 0x04: 单芯欠温保护 (3KU检测0x0400)
 
                     byte prot2 = 0;
-                    if (model.ProtOverCurrent && model.Current >= 0) prot2 |= 0x40; // Bit 6: 充电过流保护
-                    if (model.ProtOverCurrent && model.Current < 0) prot2 |= 0x20;  // Bit 5: 放电过流保护
-                    if (model.ProtSystemFault || model.ProtShortCircuit) prot2 |= 0x08; // Bit 3: 系统故障保护
+                    if (model.ProtOverCurrent) prot2 |= (0x40 | 0x20);     // 0x60: 充放电过流保护 (3KU检测0x0060)
+                    if (model.ProtSystemFault || model.ProtShortCircuit || model.ProtSoftStart) prot2 |= 0x08; // 0x08: 系统故障保护 (3KU检测0x0008)
 
                     infoData = string.Format("{0:X2}{1:X2}{2:X2}{3:X2}", warn1, warn2, prot1, prot2);
-                    if (prot1 != 0 || prot2 != 0)
+                    if (model.HasProtection)
                     {
-                        decodedInfo = string.Format("[PYLON-62H 保护跳闸] Prot1=0x{0:X2}, Prot2=0x{1:X2}, Warn1=0x{2:X2}, Warn2=0x{3:X2}",
-                            prot1, prot2, warn1, warn2);
+                        decodedInfo = string.Format("[PYLON-62H 保护跳闸: {0}] Prot1=0x{1:X2}, Prot2=0x{2:X2}, Warn1=0x{3:X2}, Warn2=0x{4:X2}",
+                            model.GetActiveProtectionsSummary(), prot1, prot2, warn1, warn2);
                     }
-                    else if (warn1 != 0 || warn2 != 0)
+                    else if (model.HasWarning)
                     {
-                        decodedInfo = string.Format("[PYLON-62H 告警提示] Warn1=0x{0:X2}, Warn2=0x{1:X2}", warn1, warn2);
+                        decodedInfo = string.Format("[PYLON-62H 告警提示: {0}] Warn1=0x{1:X2}, Warn2=0x{2:X2}",
+                            model.GetActiveWarningsSummary(), warn1, warn2);
                     }
                     else
                     {
@@ -1394,10 +1429,15 @@ namespace BMS_Protocol_Simulator
                     sb.Append(statusByte.ToString("X2"));
 
                     infoData = sb.ToString();
-                    decodedInfo = string.Format("[PYLON-63H System Config] 响应充放电控制: CV={0:F2}V, 截止={1:F2}V, 最大充电电流={2:F1}A, 最大放电电流={3:F1}A, 状态=0x{4:X2}(充使能:{5}, 放使能:{6}, 强充:{7}, 满充:{8})",
+                    string statusTag63 = "";
+                    if (model.HasProtection) statusTag63 += string.Format(" [保护跳闸: {0}]", model.GetActiveProtectionsSummary());
+                    if (model.HasWarning) statusTag63 += string.Format(" [告警提示: {0}]", model.GetActiveWarningsSummary());
+
+                    decodedInfo = string.Format("[PYLON-63H System Config] 响应充放电控制: CV={0:F2}V, 截止={1:F2}V, 充限={2:F1}A, 放限={3:F1}A, 状态=0x{4:X2}(充使能:{5}, 放使能:{6}){7}",
                         model.CVVoltage, model.CutoffVoltage, canCharge ? model.MaxChargeCurrent : 0, canDischarge ? model.MaxDischargeCurrent : 0, statusByte,
-                        (statusByte & 0x80) != 0, (statusByte & 0x40) != 0, (statusByte & 0x20) != 0, (statusByte & 0x10) != 0);
+                        (statusByte & 0x80) != 0, (statusByte & 0x40) != 0, statusTag63);
                 }
+
                 else if (cid2 == "64" || cid2 == "95") // 2.5 控制电池组系统关机指令
                 {
                     infoData = "00";
@@ -1582,6 +1622,17 @@ namespace BMS_Protocol_Simulator
             get { return 3; }
         }
 
+        public byte[] BuildMasterPollFrame(byte targetId, int pollPhase)
+        {
+            // 主机轮询: Phase 0: 61H (系统模拟量), Phase 1: 62H (系统告警), Phase 2: 63H (充放电控制)
+            string cid2 = pollPhase == 0 ? "61" : (pollPhase == 1 ? "62" : "63");
+            string cmd = string.Format("~20{0:X2}46{1}E002{0:X2}", targetId, cid2);
+            byte[] cmdBytes = Encoding.ASCII.GetBytes(cmd);
+            ushort chk = PylonChecksum.Calculate(cmdBytes, 1, cmdBytes.Length - 1);
+            string full = cmd + chk.ToString("X4") + "\r";
+            return Encoding.ASCII.GetBytes(full);
+        }
+
         public byte[] BuildMasterControlFrame(byte targetId, string commandType, object param, out string description)
         {
             description = "";
@@ -1599,17 +1650,6 @@ namespace BMS_Protocol_Simulator
                 description = "[PYLONTECH] 不支持的主机控制指令: " + commandType;
                 return null;
             }
-        }
-
-        public byte[] BuildMasterPollFrame(byte targetId, int pollPhase)
-        {
-            // 主机轮询: Phase 0: 61H (系统模拟量), Phase 1: 62H (系统告警), Phase 2: 63H (充放电控制)
-            string cid2 = pollPhase == 0 ? "61" : (pollPhase == 1 ? "62" : "63");
-            string cmd = string.Format("~20{0:X2}46{1}E002{0:X2}", targetId, cid2);
-            byte[] cmdBytes = Encoding.ASCII.GetBytes(cmd);
-            ushort chk = PylonChecksum.Calculate(cmdBytes, 1, cmdBytes.Length - 1);
-            string full = cmd + chk.ToString("X4") + "\r";
-            return Encoding.ASCII.GetBytes(full);
         }
 
         public bool TryDecodeMasterResponse(byte[] rxBuffer, int rxLength, BmsDataModel model, out string decodedInfo)

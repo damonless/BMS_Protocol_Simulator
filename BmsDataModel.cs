@@ -275,10 +275,58 @@ namespace BMS_Protocol_Simulator
         public bool ProtSystemFault { get; set; }      // 系统内部故障
         public bool ProtSoftStart { get; set; }        // 软起动故障
 
+        public bool HasProtection
+        {
+            get
+            {
+                return ProtOverVolt || ProtUnderVolt || ProtOverCurrent || ProtShortCircuit ||
+                       ProtHighTemp || ProtUnderTemp || ProtSystemFault || ProtSoftStart;
+            }
+        }
+
+        public bool HasWarning
+        {
+            get
+            {
+                return WarnSingleOverVolt || WarnSingleUnderVolt || WarnGlobalOverVolt || WarnGlobalUnderVolt ||
+                       WarnOverCurrent || WarnHighTemp || WarnLowTemp || WarnVoltDiff || WarnLowCapacity;
+            }
+        }
+
+        public string GetActiveProtectionsSummary()
+        {
+            List<string> list = new List<string>();
+            if (ProtOverVolt) list.Add("过压保护");
+            if (ProtUnderVolt) list.Add("欠压保护");
+            if (ProtOverCurrent) list.Add("过流保护");
+            if (ProtShortCircuit) list.Add("短路保护");
+            if (ProtHighTemp) list.Add("过温保护");
+            if (ProtUnderTemp) list.Add("欠温保护");
+            if (ProtSystemFault) list.Add("系统故障");
+            if (ProtSoftStart) list.Add("软起动失败");
+            return string.Join(",", list.ToArray());
+        }
+
+        public string GetActiveWarningsSummary()
+        {
+            List<string> list = new List<string>();
+            if (WarnSingleOverVolt) list.Add("单体过压告警");
+            if (WarnSingleUnderVolt) list.Add("单体欠压告警");
+            if (WarnGlobalOverVolt) list.Add("总压过压告警");
+            if (WarnGlobalUnderVolt) list.Add("总压欠压告警");
+            if (WarnOverCurrent) list.Add("过流告警");
+            if (WarnHighTemp) list.Add("高温告警");
+            if (WarnLowTemp) list.Add("低温告警");
+            if (WarnVoltDiff) list.Add("压差过大");
+            if (WarnLowCapacity) list.Add("低电量告警");
+            return string.Join(",", list.ToArray());
+        }
+
         public object SyncRoot
         {
             get { return _lock; }
         }
+
 
         public BmsDataModel()
         {
