@@ -460,9 +460,17 @@ namespace BMS_Protocol_Simulator
         private ComboBox cboProtocol;
         private ComboBox cboWorkMode;
         private CheckBox chkReplyAllIds;
+        private Label lblIdTag;
         private NumericUpDown numSpecificId;
         private Button btnConnect;
         private Label lblPortStatus;
+
+        // ── 主机模式专属控制栏控件 ──
+        private Button btnScanPacks;
+        private ComboBox cboPollInterval;
+        private Button btnPollPause;
+        private Button btnSinglePoll;
+        private Button btnMasterControl;
 
         // ── 模拟量控件 ──
         private NumericUpDown numVoltage, numCurrent, numTemp, numSoc, numSoh;
@@ -506,10 +514,13 @@ namespace BMS_Protocol_Simulator
             _comm = new SerialCommManager(_model);
             _comm.OnLogEvent += Comm_OnLogEvent;
             _comm.OnStatusChanged += Comm_OnStatusChanged;
+            _comm.OnMasterTelemetryUpdated += Comm_OnMasterTelemetryUpdated;
+            _comm.OnScanPacksCompleted += Comm_OnScanPacksCompleted;
 
             BuildUI();
             RefreshPorts();
             SyncModelToUI();
+            UpdateWorkModeUI();
         }
 
         private void BuildUI()
@@ -543,7 +554,7 @@ namespace BMS_Protocol_Simulator
             mainLayout.ColumnCount = 1;
             mainLayout.Padding = new Padding(6, 6, 6, 2);
             mainLayout.Margin = new Padding(0);
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 65f));
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 70f));
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
 
             this.Controls.Add(mainLayout);
@@ -568,10 +579,10 @@ namespace BMS_Protocol_Simulator
             Label lblPort = new Label { Text = "端口:", AutoSize = true, Margin = new Padding(2, 7, 2, 0) };
             flpTop.Controls.Add(lblPort);
 
-            cboPort = new ComboBox { Width = 80, DropDownStyle = ComboBoxStyle.DropDownList };
+            cboPort = new ComboBox { Width = 75, DropDownStyle = ComboBoxStyle.DropDownList };
             flpTop.Controls.Add(cboPort);
 
-            Button btnRefresh = new Button { Text = "刷新", Width = 40, Height = 25, Margin = new Padding(2, 3, 6, 0) };
+            Button btnRefresh = new Button { Text = "刷新", Width = 40, Height = 25, Margin = new Padding(2, 3, 4, 0) };
             btnRefresh.Click += delegate(object s, EventArgs e) { RefreshPorts(); };
             flpTop.Controls.Add(btnRefresh);
 
@@ -585,10 +596,10 @@ namespace BMS_Protocol_Simulator
             flpTop.Controls.Add(cboBaud);
 
             // 协议类型
-            Label lblProt = new Label { Text = "协议:", AutoSize = true, Margin = new Padding(4, 7, 2, 0) };
+            Label lblProt = new Label { Text = "协议:", AutoSize = true, Margin = new Padding(3, 7, 2, 0) };
             flpTop.Controls.Add(lblProt);
 
-            cboProtocol = new ComboBox { Width = 100, DropDownStyle = ComboBoxStyle.DropDownList };
+            cboProtocol = new ComboBox { Width = 95, DropDownStyle = ComboBoxStyle.DropDownList };
             cboProtocol.Items.AddRange(new object[] {
                 "CVTE",
                 "GROWATT",
@@ -600,31 +611,123 @@ namespace BMS_Protocol_Simulator
             flpTop.Controls.Add(cboProtocol);
 
             // 工作模式
-            Label lblMode = new Label { Text = "模式:", AutoSize = true, Margin = new Padding(4, 7, 2, 0) };
+            Label lblMode = new Label { Text = "模式:", AutoSize = true, Margin = new Padding(3, 7, 2, 0) };
             flpTop.Controls.Add(lblMode);
 
-            cboWorkMode = new ComboBox { Width = 100, DropDownStyle = ComboBoxStyle.DropDownList };
+            cboWorkMode = new ComboBox { Width = 92, DropDownStyle = ComboBoxStyle.DropDownList };
             cboWorkMode.Items.AddRange(new object[] { "从机模拟", "主机轮询" });
             cboWorkMode.SelectedIndex = 0;
             cboWorkMode.SelectedIndexChanged += delegate(object s, EventArgs e) {
-                _comm.CurrentWorkMode = cboWorkMode.SelectedIndex == 0 ? WorkMode.SlaveSimulator : WorkMode.MasterPoller;
+                UpdateWorkModeUI();
             };
             flpTop.Controls.Add(cboWorkMode);
 
-            // 轮询应答 ID
-            chkReplyAllIds = new CheckBox { Text = "全ID应答", AutoSize = true, Checked = true, Margin = new Padding(4, 7, 2, 0) };
+            // 轮询应答 / 目标 ID
+            chkReplyAllIds = new CheckBox { Text = "全ID应答", AutoSize = true, Checked = true, Margin = new Padding(3, 7, 2, 0) };
             chkReplyAllIds.CheckedChanged += delegate(object s, EventArgs e) {
                 _comm.ReplyAllIds = chkReplyAllIds.Checked;
                 numSpecificId.Enabled = !chkReplyAllIds.Checked;
             };
             flpTop.Controls.Add(chkReplyAllIds);
 
-            numSpecificId = new NumericUpDown { Minimum = 0, Maximum = 15, Value = 1, Width = 38, Enabled = false, Margin = new Padding(0, 4, 6, 0) };
-            numSpecificId.ValueChanged += delegate(object s, EventArgs e) { _comm.SpecificId = (int)numSpecificId.Value; };
+            lblIdTag = new Label { Text = "从机ID:", AutoSize = true, Margin = new Padding(2, 7, 2, 0) };
+            flpTop.Controls.Add(lblIdTag);
+
+            numSpecificId = new NumericUpDown { Minimum = 0, Maximum = 15, Value = 1, Width = 36, Enabled = false, Margin = new Padding(0, 4, 4, 0) };
+            numSpecificId.ValueChanged += delegate(object s, EventArgs e) {
+                _comm.SpecificId = (int)numSpecificId.Value;
+                _comm.TargetSlaveId = (byte)numSpecificId.Value;
+            };
             flpTop.Controls.Add(numSpecificId);
 
+            // ── 主机模式专属操作栏控件 ──
+            btnScanPacks = new Button { Text = "🔍扫描", Width = 54, Height = 25, Margin = new Padding(2, 3, 3, 0), Visible = false };
+            btnScanPacks.Click += delegate(object s, EventArgs e) {
+                if (!_comm.IsOpen) { MessageBox.Show("请先打开串口再执行扫描！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                btnScanPacks.Enabled = false;
+                _comm.StartScanOnlinePacks();
+            };
+            flpTop.Controls.Add(btnScanPacks);
+
+            cboPollInterval = new ComboBox { Width = 72, DropDownStyle = ComboBoxStyle.DropDownList, Margin = new Padding(2, 4, 3, 0), Visible = false };
+            cboPollInterval.Items.AddRange(new object[] { "100ms", "200ms", "500ms", "1000ms", "2000ms", "手动单步" });
+            cboPollInterval.SelectedIndex = 2; // 默认 500ms
+            cboPollInterval.SelectedIndexChanged += delegate(object s, EventArgs e) {
+                switch (cboPollInterval.SelectedIndex)
+                {
+                    case 0: _comm.PollIntervalMs = 100; break;
+                    case 1: _comm.PollIntervalMs = 200; break;
+                    case 2: _comm.PollIntervalMs = 500; break;
+                    case 3: _comm.PollIntervalMs = 1000; break;
+                    case 4: _comm.PollIntervalMs = 2000; break;
+                    case 5: _comm.PollIntervalMs = 0; break; // 手动单步
+                }
+            };
+            flpTop.Controls.Add(cboPollInterval);
+
+            btnPollPause = new Button { Text = "⏸暂停", Width = 54, Height = 25, Margin = new Padding(2, 3, 3, 0), Visible = false };
+            btnPollPause.Click += delegate(object s, EventArgs e) {
+                _comm.IsPollingPaused = !_comm.IsPollingPaused;
+                btnPollPause.Text = _comm.IsPollingPaused ? "▶恢复" : "⏸暂停";
+                lblStatusText.Text = _comm.IsPollingPaused ? "⏸ 轮询已暂停" : "▶ 轮询已恢复运行";
+            };
+            flpTop.Controls.Add(btnPollPause);
+
+            btnSinglePoll = new Button { Text = "⟳单次", Width = 54, Height = 25, Margin = new Padding(2, 3, 3, 0), Visible = false };
+            btnSinglePoll.Click += delegate(object s, EventArgs e) {
+                if (!_comm.IsOpen) { MessageBox.Show("请先打开串口！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                _comm.TriggerSinglePoll();
+                lblStatusText.Text = string.Format("⟳ 已向从机 ID:{0} 触发单次轮询读取", _comm.TargetSlaveId);
+            };
+            flpTop.Controls.Add(btnSinglePoll);
+
+            btnMasterControl = new Button { Text = "下发控制 ▾", Width = 84, Height = 25, Margin = new Padding(2, 3, 5, 0), Visible = false };
+            ContextMenuStrip menuMaster = new ContextMenuStrip { Font = new Font("Microsoft YaHei UI", 9F), ShowImageMargin = false };
+            ToolStripMenuItem miShutdown = new ToolStripMenuItem("⚡ 下发系统远程关机 (Pylon 64H)");
+            miShutdown.Click += delegate(object s, EventArgs e) {
+                if (!_comm.IsOpen) { MessageBox.Show("请先打开串口！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                if (MessageBox.Show(string.Format("确定向从机 ID:{0} 发送 64H 电池系统关机/休眠指令吗？", _comm.TargetSlaveId), "确认下发", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                {
+                    _comm.SendMasterControl("SHUTDOWN");
+                }
+            };
+            ToolStripMenuItem miWriteChgI = new ToolStripMenuItem("⚡ 下发最大充电限流 (写入当前配置值)");
+            miWriteChgI.Click += delegate(object s, EventArgs e) {
+                if (!_comm.IsOpen) { MessageBox.Show("请先打开串口！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                _comm.SendMasterControl("WRITE_MAX_CHG_CURRENT", (double)numMaxChgI.Value);
+            };
+            ToolStripMenuItem miWriteDisI = new ToolStripMenuItem("⚡ 下发最大放电限流 (写入当前配置值)");
+            miWriteDisI.Click += delegate(object s, EventArgs e) {
+                if (!_comm.IsOpen) { MessageBox.Show("请先打开串口！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                _comm.SendMasterControl("WRITE_MAX_DIS_CURRENT", (double)numMaxDisI.Value);
+            };
+            ToolStripMenuItem miWriteCv = new ToolStripMenuItem("⚡ 下发 CV 恒压充电点 (写入当前配置值)");
+            miWriteCv.Click += delegate(object s, EventArgs e) {
+                if (!_comm.IsOpen) { MessageBox.Show("请先打开串口！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                _comm.SendMasterControl("WRITE_CV_VOLT", (double)numCvVolt.Value);
+            };
+            ToolStripMenuItem miWriteCut = new ToolStripMenuItem("⚡ 下发放电截止点 (写入当前配置值)");
+            miWriteCut.Click += delegate(object s, EventArgs e) {
+                if (!_comm.IsOpen) { MessageBox.Show("请先打开串口！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                _comm.SendMasterControl("WRITE_CUTOFF_VOLT", (double)numCutoffVolt.Value);
+            };
+            ToolStripMenuItem miForceChg = new ToolStripMenuItem("⚡ 下发强制充电控制字 (Force Charge Enable)");
+            miForceChg.Click += delegate(object s, EventArgs e) {
+                if (!_comm.IsOpen) { MessageBox.Show("请先打开串口！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                _comm.SendMasterControl("FORCE_CHARGE");
+            };
+            menuMaster.Items.AddRange(new ToolStripItem[] {
+                miShutdown, new ToolStripSeparator(),
+                miWriteChgI, miWriteDisI, miWriteCv, miWriteCut, new ToolStripSeparator(),
+                miForceChg
+            });
+            btnMasterControl.Click += delegate(object s, EventArgs e) {
+                menuMaster.Show(btnMasterControl, new Point(0, btnMasterControl.Height));
+            };
+            flpTop.Controls.Add(btnMasterControl);
+
             // 开关连接按钮
-            btnConnect = new Button { Text = "打开串口", Width = 80, Height = 26, Margin = new Padding(4, 3, 6, 0) };
+            btnConnect = new Button { Text = "打开串口", Width = 75, Height = 26, Margin = new Padding(3, 3, 4, 0) };
             btnConnect.Click += BtnConnect_Click;
             flpTop.Controls.Add(btnConnect);
 
@@ -632,11 +735,11 @@ namespace BMS_Protocol_Simulator
             {
                 Text = "未连接",
                 AutoSize = false,
-                Width = 75,
+                Width = 70,
                 Height = 22,
                 TextAlign = ContentAlignment.MiddleLeft,
                 ForeColor = Color.Gray,
-                Margin = new Padding(2, 6, 4, 0)
+                Margin = new Padding(2, 6, 2, 0)
             };
             flpTop.Controls.Add(lblPortStatus);
 
@@ -1770,27 +1873,103 @@ namespace BMS_Protocol_Simulator
             }
         }
 
+        private void UpdateProtocolBadge()
+        {
+            if (_comm == null || lblProtocolBadge == null) return;
+            string modeStr = _comm.CurrentWorkMode == WorkMode.MasterPoller ? "[主机模式]" : "[从机模式]";
+            lblProtocolBadge.Text = string.Format("协议: {0} {1}", _comm.ProtocolHandler.ProtocolName, modeStr);
+        }
+
+        private void UpdateWorkModeUI()
+        {
+            bool isMaster = (cboWorkMode.SelectedIndex == 1);
+            _comm.CurrentWorkMode = isMaster ? WorkMode.MasterPoller : WorkMode.SlaveSimulator;
+            _comm.TargetSlaveId = (byte)numSpecificId.Value;
+            _comm.SpecificId = (int)numSpecificId.Value;
+
+            if (isMaster)
+            {
+                chkReplyAllIds.Visible = false;
+                lblIdTag.Text = "目标ID:";
+                numSpecificId.Enabled = true;
+
+                btnScanPacks.Visible = true;
+                cboPollInterval.Visible = true;
+                btnPollPause.Visible = true;
+                btnSinglePoll.Visible = true;
+                btnMasterControl.Visible = true;
+
+                lblStatusText.Text = "⚡ 已进入 [主机轮询模式] (模拟逆变器读写电池包)";
+            }
+            else
+            {
+                chkReplyAllIds.Visible = true;
+                lblIdTag.Text = "从机ID:";
+                numSpecificId.Enabled = !chkReplyAllIds.Checked;
+
+                btnScanPacks.Visible = false;
+                cboPollInterval.Visible = false;
+                btnPollPause.Visible = false;
+                btnSinglePoll.Visible = false;
+                btnMasterControl.Visible = false;
+
+                lblStatusText.Text = "✓ 已进入 [从机模拟模式] (响应逆变器查询)";
+            }
+            UpdateProtocolBadge();
+        }
+
+        private void Comm_OnMasterTelemetryUpdated(object sender, BmsDataModel model)
+        {
+            if (this.IsDisposed || !this.IsHandleCreated) return;
+            this.BeginInvoke(new Action(delegate()
+            {
+                if (this.IsDisposed) return;
+                SyncModelToUI();
+                lblStatusText.Text = string.Format("✓ [主机遥测回显] 目标ID:{0} 响应正常 (时延: {1}ms | {2:HH:mm:ss})",
+                    _comm.TargetSlaveId, _comm.LastResponseTimeMs, DateTime.Now);
+            }));
+        }
+
+        private void Comm_OnScanPacksCompleted(object sender, List<byte> foundPacks)
+        {
+            if (this.IsDisposed || !this.IsHandleCreated) return;
+            this.BeginInvoke(new Action(delegate()
+            {
+                if (this.IsDisposed) return;
+                btnScanPacks.Enabled = true;
+                if (foundPacks != null && foundPacks.Count > 0)
+                {
+                    numSpecificId.Value = foundPacks[0];
+                    _comm.TargetSlaveId = foundPacks[0];
+                    MessageBox.Show(string.Format("总线扫描完成！\n\n共探测到 {0} 个在线电池包:\nID: {1}\n\n已自动将当前目标从机 ID 切换为: {2}",
+                        foundPacks.Count, string.Join(", ", foundPacks.ConvertAll<string>(delegate(byte b) { return b.ToString(); }).ToArray()), foundPacks[0]),
+                        "在线从机探测成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    MessageBox.Show("总线扫描完成，未探测到任何在线响应的电池包。\n请检查通信接线 (A/B) 与电池包供电状态！", "未发现从机", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }));
+        }
+
         private void CboProtocol_SelectedIndexChanged(object sender, EventArgs e)
         {
             switch (cboProtocol.SelectedIndex)
             {
                 case 0:
                     _comm.ProtocolHandler = new CvteModbusHandler();
-                    lblProtocolBadge.Text = "协议: CVTE";
                     break;
                 case 1:
                     _comm.ProtocolHandler = new GrowattModbusHandler();
-                    lblProtocolBadge.Text = "协议: GROWATT";
                     break;
                 case 2:
                     _comm.ProtocolHandler = new VoltronicModbusHandler();
-                    lblProtocolBadge.Text = "协议: VOLTRONIC";
                     break;
                 case 3:
                     _comm.ProtocolHandler = new PylontechAsciiHandler();
-                    lblProtocolBadge.Text = "协议: PYLONTECH";
                     break;
             }
+            UpdateProtocolBadge();
         }
 
         private void BtnConnect_Click(object sender, EventArgs e)

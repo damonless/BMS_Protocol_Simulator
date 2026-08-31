@@ -64,10 +64,13 @@ namespace BMS_Protocol_Simulator
     public interface IBmsProtocolHandler
     {
         string ProtocolName { get; }
+        int MasterPollPhaseCount { get; }
         // 尝试解析逆变器发来的查询，并生成从机应答包
         bool TryProcessQuery(byte[] rxBuffer, int rxLength, BmsDataModel model, bool replyAllIds, int specificId, out byte[] txResponse, out string decodedInfo);
         // 主机轮询模式：构造发送给真实电池包的查询帧
         byte[] BuildMasterPollFrame(byte targetId, int pollPhase);
+        // 主机模式：构造向从机下发的控制帧 (如关机、写参数等)
+        byte[] BuildMasterControlFrame(byte targetId, string commandType, object param, out string description);
         // 主机轮询模式：解析真实电池包回复的报文并更新至 model
         bool TryDecodeMasterResponse(byte[] rxBuffer, int rxLength, BmsDataModel model, out string decodedInfo);
     }
@@ -292,13 +295,63 @@ namespace BMS_Protocol_Simulator
             }
         }
 
+        public int MasterPollPhaseCount
+        {
+            get { return 1; }
+        }
+
+        public byte[] BuildMasterControlFrame(byte targetId, string commandType, object param, out string description)
+        {
+            ushort regAddr = 0;
+            ushort regVal = 0;
+            description = "";
+
+            if (commandType == "WRITE_MAX_CHG_CURRENT")
+            {
+                double currentA = param is double ? (double)param : 100.0;
+                regAddr = 0x0029;
+                regVal = (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(currentA * 100)));
+                description = string.Format("[CVTE 主机下发] 写最大充电电流: {0:F1}A (0x{1:X4}=0x{2:X4})", currentA, regAddr, regVal);
+            }
+            else if (commandType == "WRITE_CV_VOLT")
+            {
+                double cvV = param is double ? (double)param : 56.0;
+                regAddr = 0x002A;
+                regVal = (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(cvV * 100)));
+                description = string.Format("[CVTE 主机下发] 写 CV 恒压点: {0:F2}V (0x{1:X4}=0x{2:X4})", cvV, regAddr, regVal);
+            }
+            else if (commandType == "FORCE_CHARGE")
+            {
+                regAddr = 0x0020;
+                regVal = 0x1060; // 充电+放电使能 + 强制充电请求 Bit12
+                description = string.Format("[CVTE 主机下发] 触发强制充电控制 (0x{0:X4}=0x{1:X4})", regAddr, regVal);
+            }
+            else
+            {
+                description = "[CVTE] 不支持的主机控制指令: " + commandType;
+                return null;
+            }
+
+            byte[] frame = new byte[8];
+            frame[0] = targetId;
+            frame[1] = 0x06; // 写单个寄存器
+            frame[2] = (byte)(regAddr >> 8);
+            frame[3] = (byte)(regAddr & 0xFF);
+            frame[4] = (byte)(regVal >> 8);
+            frame[5] = (byte)(regVal & 0xFF);
+            ushort crc = ModbusCrc.Calculate(frame, 6);
+            frame[6] = (byte)(crc >> 8);
+            frame[7] = (byte)(crc & 0xFF);
+            return frame;
+        }
+
         public byte[] BuildMasterPollFrame(byte targetId, int pollPhase)
         {
             byte[] frame = new byte[8];
             frame[0] = targetId;
             frame[1] = 0x03;
             frame[2] = 0x00; frame[3] = 0x20; // 0x0020
-            frame[4] = 0x00; frame[5] = 0x0C; // 12 寄存器 (0x0020~0x002B)
+            frame[4] = 0x00; frame[5] = 0x0D; // 13 寄存器 (0x0020~0x002C 包含循环次数)
             ushort crc = ModbusCrc.Calculate(frame, 6);
             frame[6] = (byte)(crc >> 8);
             frame[7] = (byte)(crc & 0xFF);
@@ -310,7 +363,16 @@ namespace BMS_Protocol_Simulator
             decodedInfo = "";
             if (rxLength < 7) return false;
             if (!ModbusCrc.Check(rxBuffer, rxLength)) return false;
-            if (rxBuffer[1] != 0x03) return false;
+            if (rxBuffer[1] != 0x03 && rxBuffer[1] != 0x06) return false;
+
+            if (rxBuffer[1] == 0x06)
+            {
+                ushort addr = (ushort)((rxBuffer[2] << 8) | rxBuffer[3]);
+                ushort val = (ushort)((rxBuffer[4] << 8) | rxBuffer[5]);
+                decodedInfo = string.Format("[CVTE] 从机确认写入: 寄存器 0x{0:X4} = 0x{1:X4}", addr, val);
+                return true;
+            }
+
             byte byteCount = rxBuffer[2];
             if (rxLength != 3 + byteCount + 2) return false;
 
@@ -318,20 +380,65 @@ namespace BMS_Protocol_Simulator
             {
                 if (byteCount >= 24)
                 {
+                    // 0x0020: 状态信息
+                    ushort status = (ushort)((rxBuffer[3] << 8) | rxBuffer[4]);
+                    model.StatusBalancing = (status & (1 << 3)) != 0;
+                    model.StatusSleep = (status & (1 << 4)) != 0;
+                    model.StatusDischargeEnable = (status & (1 << 5)) != 0;
+                    model.StatusChargeEnable = (status & (1 << 6)) != 0;
+                    model.StatusForceCharge = (status & (1 << 12)) != 0;
+
+                    // 0x0021: 电池总压 (10mV)
                     model.Voltage = ((rxBuffer[5] << 8) | rxBuffer[6]) / 100.0;
+                    // 0x0022: 充放电流 (10mA)
                     model.Current = (short)((rxBuffer[7] << 8) | rxBuffer[8]) / 100.0;
+                    // 0x0023: 最高温度 (1°C)
                     model.Temperature = (short)((rxBuffer[9] << 8) | rxBuffer[10]);
+                    // 0x0024: SOC (1%)
                     model.SOC = ((rxBuffer[11] << 8) | rxBuffer[12]);
+                    // 0x0025: 剩余容量 (10mAh)
                     model.RemainingCapacity = ((rxBuffer[13] << 8) | rxBuffer[14]) / 100.0;
+                    // 0x0026: 满充容量 (10mAh)
                     model.FullCapacity = ((rxBuffer[15] << 8) | rxBuffer[16]) / 100.0;
+
+                    // 0x0027: 故障保护信息
+                    ushort fault = (ushort)((rxBuffer[17] << 8) | rxBuffer[18]);
+                    model.ProtOverVolt = (fault & 0x0001) != 0;
+                    model.ProtUnderVolt = (fault & 0x0002) != 0;
+                    model.ProtOverCurrent = (fault & 0x0004) != 0;
+                    model.ProtShortCircuit = (fault & 0x0008) != 0;
+                    model.ProtHighTemp = (fault & 0x0010) != 0;
+                    model.ProtUnderTemp = (fault & 0x0020) != 0;
+                    model.ProtSystemFault = (fault & 0x00C0) != 0;
+                    model.ProtSoftStart = (fault & 0x0100) != 0;
+
+                    // 0x0028: 警告信息
+                    ushort warn = (ushort)((rxBuffer[19] << 8) | rxBuffer[20]);
+                    model.WarnSingleOverVolt = (warn & 0x0001) != 0;
+                    model.WarnSingleUnderVolt = (warn & 0x0002) != 0;
+                    model.WarnOverCurrent = (warn & 0x0004) != 0;
+                    model.WarnHighTemp = (warn & 0x0008) != 0;
+                    model.WarnLowTemp = (warn & 0x0010) != 0;
+                    model.WarnVoltDiff = (warn & 0x0020) != 0;
+                    model.WarnLowCapacity = (warn & 0x0040) != 0;
+
+                    // 0x0029: 最大充电电流
                     model.MaxChargeCurrent = ((rxBuffer[21] << 8) | rxBuffer[22]) / 100.0;
+                    // 0x002A: CV 恒压点
                     model.CVVoltage = ((rxBuffer[23] << 8) | rxBuffer[24]) / 100.0;
+                    // 0x002B: SOH
                     model.SOH = ((rxBuffer[25] << 8) | rxBuffer[26]);
+
+                    // 0x002C: 循环次数 (若读取 >= 26 字节)
+                    if (byteCount >= 26)
+                    {
+                        model.CycleCount = (rxBuffer[27] << 8) | rxBuffer[28];
+                    }
                 }
             }
 
-            decodedInfo = string.Format("[CVTE] 解析成功: 电压={0:F2}V, 电流={1:F2}A, SOC={2:F0}%, 容量={3:F1}Ah, CV={4:F2}V",
-                model.Voltage, model.Current, model.SOC, model.RemainingCapacity, model.CVVoltage);
+            decodedInfo = string.Format("[CVTE] 解析成功: 电压={0:F2}V, 电流={1:F2}A, SOC={2:F0}%, 容量={3:F1}/{4:F1}Ah, CV={5:F2}V, 限流={6:F1}A",
+                model.Voltage, model.Current, model.SOC, model.RemainingCapacity, model.FullCapacity, model.CVVoltage, model.MaxChargeCurrent);
             return true;
         }
     }
@@ -567,13 +674,70 @@ namespace BMS_Protocol_Simulator
             }
         }
 
+        public int MasterPollPhaseCount
+        {
+            get { return 1; }
+        }
+
+        public byte[] BuildMasterControlFrame(byte targetId, string commandType, object param, out string description)
+        {
+            ushort regAddr = 0;
+            ushort regVal = 0;
+            description = "";
+
+            if (commandType == "WRITE_MAX_CHG_CURRENT")
+            {
+                double currentA = param is double ? (double)param : 100.0;
+                regAddr = 0x0019;
+                regVal = (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(currentA * 100)));
+                description = string.Format("[GROWATT 主机下发] 写最大充电电流: {0:F1}A (0x{1:X4}=0x{2:X4})", currentA, regAddr, regVal);
+            }
+            else if (commandType == "WRITE_MAX_DIS_CURRENT")
+            {
+                double currentA = param is double ? (double)param : 100.0;
+                regAddr = 0x0023;
+                regVal = (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(currentA * 100)));
+                description = string.Format("[GROWATT 主机下发] 写最大放电电流: {0:F1}A (0x{1:X4}=0x{2:X4})", currentA, regAddr, regVal);
+            }
+            else if (commandType == "WRITE_CV_VOLT")
+            {
+                double cvV = param is double ? (double)param : 56.0;
+                regAddr = 0x0021;
+                regVal = (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(cvV * 100)));
+                description = string.Format("[GROWATT 主机下发] 写 CV 恒压点: {0:F2}V (0x{1:X4}=0x{2:X4})", cvV, regAddr, regVal);
+            }
+            else if (commandType == "FORCE_CHARGE")
+            {
+                regAddr = 0x0013;
+                regVal = 0x1060; // 充电+放电使能 + 强制充电请求 Bit12
+                description = string.Format("[GROWATT 主机下发] 触发强制充电控制 (0x{0:X4}=0x{1:X4})", regAddr, regVal);
+            }
+            else
+            {
+                description = "[GROWATT] 不支持的主机控制指令: " + commandType;
+                return null;
+            }
+
+            byte[] frame = new byte[8];
+            frame[0] = targetId;
+            frame[1] = 0x06; // 写单个寄存器
+            frame[2] = (byte)(regAddr >> 8);
+            frame[3] = (byte)(regAddr & 0xFF);
+            frame[4] = (byte)(regVal >> 8);
+            frame[5] = (byte)(regVal & 0xFF);
+            ushort crc = ModbusCrc.Calculate(frame, 6);
+            frame[6] = (byte)(crc >> 8);
+            frame[7] = (byte)(crc & 0xFF);
+            return frame;
+        }
+
         public byte[] BuildMasterPollFrame(byte targetId, int pollPhase)
         {
             byte[] frame = new byte[8];
             frame[0] = targetId;
             frame[1] = 0x03;
-            frame[2] = 0x00; frame[3] = 0x14; // 0x0014
-            frame[4] = 0x00; frame[5] = 0x0F; // 15 寄存器
+            frame[2] = 0x00; frame[3] = 0x13; // 0x0013 (从状态字开始读)
+            frame[4] = 0x00; frame[5] = 0x11; // 17 寄存器 (0x0013~0x0023 覆盖状态、告警、模拟量与充放电限流)
             ushort crc = ModbusCrc.Calculate(frame, 6);
             frame[6] = (byte)(crc >> 8);
             frame[7] = (byte)(crc & 0xFF);
@@ -585,13 +749,72 @@ namespace BMS_Protocol_Simulator
             decodedInfo = "";
             if (rxLength < 7) return false;
             if (!ModbusCrc.Check(rxBuffer, rxLength)) return false;
-            if (rxBuffer[1] != 0x03) return false;
+            if (rxBuffer[1] != 0x03 && rxBuffer[1] != 0x06) return false;
+
+            if (rxBuffer[1] == 0x06)
+            {
+                ushort addr = (ushort)((rxBuffer[2] << 8) | rxBuffer[3]);
+                ushort val = (ushort)((rxBuffer[4] << 8) | rxBuffer[5]);
+                decodedInfo = string.Format("[GROWATT] 从机确认写入: 寄存器 0x{0:X4} = 0x{1:X4}", addr, val);
+                return true;
+            }
+
             byte byteCount = rxBuffer[2];
             if (rxLength != 3 + byteCount + 2) return false;
 
             lock (model.SyncRoot)
             {
-                if (byteCount >= 30) // 15 寄存器
+                if (byteCount >= 34) // 17 寄存器 (0x0013~0x0023)
+                {
+                    // 0x0013: 状态信息
+                    ushort status = (ushort)((rxBuffer[3] << 8) | rxBuffer[4]);
+                    model.StatusBalancing = (status & (1 << 3)) != 0;
+                    model.StatusSleep = (status & (1 << 4)) != 0;
+                    model.StatusDischargeEnable = (status & (1 << 5)) != 0;
+                    model.StatusChargeEnable = (status & (1 << 6)) != 0;
+                    model.StatusForceCharge = (status & (1 << 12)) != 0;
+
+                    // 0x0014: 错误与告警
+                    ushort err = (ushort)((rxBuffer[5] << 8) | rxBuffer[6]);
+                    model.WarnSingleOverVolt = (err & (1 << 0)) != 0;
+                    model.WarnSingleUnderVolt = (err & (1 << 1)) != 0;
+                    model.WarnGlobalOverVolt = (err & (1 << 2)) != 0;
+                    model.WarnGlobalUnderVolt = (err & (1 << 3)) != 0;
+                    model.WarnOverCurrent = (err & ((1 << 4) | (1 << 5))) != 0;
+                    model.WarnHighTemp = (err & ((1 << 6) | (1 << 8) | (1 << 10) | (1 << 11))) != 0;
+                    model.WarnLowTemp = (err & ((1 << 7) | (1 << 9) | (1 << 12))) != 0;
+                    model.ProtSoftStart = (err & (1 << 8)) != 0;
+                    model.ProtSystemFault = (err & (1 << 9)) != 0;
+                    model.WarnVoltDiff = (err & (1 << 10)) != 0;
+                    model.WarnLowCapacity = (err & (1 << 13)) != 0;
+
+                    // 0x0015: SOC (1%)
+                    model.SOC = (rxBuffer[7] << 8) | rxBuffer[8];
+                    // 0x0016: 电池总压 (10mV)
+                    model.Voltage = ((rxBuffer[9] << 8) | rxBuffer[10]) / 100.0;
+                    // 0x0017: 充放电流 (10mA)
+                    model.Current = (short)((rxBuffer[11] << 8) | rxBuffer[12]) / 100.0;
+                    // 0x0018: 最高温度 (1°C)
+                    model.Temperature = (short)((rxBuffer[13] << 8) | rxBuffer[14]);
+                    // 0x0019: 最大充电电流 (10mA)
+                    model.MaxChargeCurrent = ((rxBuffer[15] << 8) | rxBuffer[16]) / 100.0;
+                    // 0x001A: 剩余容量 (10mAh)
+                    model.RemainingCapacity = ((rxBuffer[17] << 8) | rxBuffer[18]) / 100.0;
+                    // 0x001B: 满充容量 (10mAh)
+                    model.FullCapacity = ((rxBuffer[19] << 8) | rxBuffer[20]) / 100.0;
+
+                    // 0x001E: 循环次数
+                    model.CycleCount = (rxBuffer[25] << 8) | rxBuffer[26];
+                    // 0x001F: SOH
+                    ushort soh = (ushort)((rxBuffer[27] << 8) | rxBuffer[28]);
+                    if (soh > 0 && soh <= 100) model.SOH = soh;
+
+                    // 0x0021: CV 恒压点 (10mV)
+                    model.CVVoltage = ((rxBuffer[31] << 8) | rxBuffer[32]) / 100.0;
+                    // 0x0023: 最大放电电流 (10mA)
+                    model.MaxDischargeCurrent = ((rxBuffer[35] << 8) | rxBuffer[36]) / 100.0;
+                }
+                else if (byteCount >= 30) // 15 寄存器 (0x0014~0x0022 兼容格式)
                 {
                     model.SOC = (rxBuffer[5] << 8) | rxBuffer[6];
                     model.Voltage = ((rxBuffer[7] << 8) | rxBuffer[8]) / 100.0;
@@ -604,8 +827,8 @@ namespace BMS_Protocol_Simulator
                 }
             }
 
-            decodedInfo = string.Format("[GROWATT] 解析成功: 电压={0:F2}V, SOC={1:F0}%, 电流={2:F2}A, CV={3:F2}V",
-                model.Voltage, model.SOC, model.Current, model.CVVoltage);
+            decodedInfo = string.Format("[GROWATT] 解析成功: 电压={0:F2}V, SOC={1:F0}%, 电流={2:F2}A, 容量={3:F1}/{4:F1}Ah, CV={5:F2}V, 充放限流={6:F1}/{7:F1}A",
+                model.Voltage, model.SOC, model.Current, model.RemainingCapacity, model.FullCapacity, model.CVVoltage, model.MaxChargeCurrent, model.MaxDischargeCurrent);
             return true;
         }
     }
@@ -781,6 +1004,70 @@ namespace BMS_Protocol_Simulator
             }
         }
 
+        public int MasterPollPhaseCount
+        {
+            get { return 3; }
+        }
+
+        public byte[] BuildMasterControlFrame(byte targetId, string commandType, object param, out string description)
+        {
+            ushort regAddr = 0;
+            ushort regVal = 0;
+            description = "";
+
+            if (commandType == "WRITE_MAX_CHG_CURRENT")
+            {
+                double currentA = param is double ? (double)param : 100.0;
+                regAddr = 0x0072;
+                regVal = (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(currentA * 10)));
+                description = string.Format("[VOLTRONIC 主机下发] 写最大充电限流: {0:F1}A (0x{1:X4}=0x{2:X4})", currentA, regAddr, regVal);
+            }
+            else if (commandType == "WRITE_MAX_DIS_CURRENT")
+            {
+                double currentA = param is double ? (double)param : 100.0;
+                regAddr = 0x0073;
+                regVal = (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(currentA * 10)));
+                description = string.Format("[VOLTRONIC 主机下发] 写最大放电限流: {0:F1}A (0x{1:X4}=0x{2:X4})", currentA, regAddr, regVal);
+            }
+            else if (commandType == "WRITE_CV_VOLT")
+            {
+                double cvV = param is double ? (double)param : 56.0;
+                regAddr = 0x0070;
+                regVal = (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(cvV * 10)));
+                description = string.Format("[VOLTRONIC 主机下发] 写 CV 恒压点: {0:F1}V (0x{1:X4}=0x{2:X4})", cvV, regAddr, regVal);
+            }
+            else if (commandType == "WRITE_CUTOFF_VOLT")
+            {
+                double cutV = param is double ? (double)param : 42.0;
+                regAddr = 0x0071;
+                regVal = (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(cutV * 10)));
+                description = string.Format("[VOLTRONIC 主机下发] 写放电截止点: {0:F1}V (0x{1:X4}=0x{2:X4})", cutV, regAddr, regVal);
+            }
+            else if (commandType == "FORCE_CHARGE")
+            {
+                regAddr = 0x0074;
+                regVal = 0x00E8; // Bit 7(充电使能) + Bit 6(放电使能) + Bit 5(请求强充) + Bit 3(请求满充)
+                description = string.Format("[VOLTRONIC 主机下发] 触发强制充电控制字 (0x{0:X4}=0x{1:X4})", regAddr, regVal);
+            }
+            else
+            {
+                description = "[VOLTRONIC] 不支持的主机控制指令: " + commandType;
+                return null;
+            }
+
+            byte[] frame = new byte[8];
+            frame[0] = targetId;
+            frame[1] = 0x06; // 写单个寄存器
+            frame[2] = (byte)(regAddr >> 8);
+            frame[3] = (byte)(regAddr & 0xFF);
+            frame[4] = (byte)(regVal >> 8);
+            frame[5] = (byte)(regVal & 0xFF);
+            ushort crc = ModbusCrc.Calculate(frame, 6);
+            frame[6] = (byte)(crc >> 8);
+            frame[7] = (byte)(crc & 0xFF);
+            return frame;
+        }
+
         public byte[] BuildMasterPollFrame(byte targetId, int pollPhase)
         {
             byte[] frame = new byte[8];
@@ -788,15 +1075,15 @@ namespace BMS_Protocol_Simulator
             frame[1] = 0x03;
             if (pollPhase == 0)
             {
-                frame[2] = 0x00; frame[3] = 0x30; frame[4] = 0x00; frame[5] = 0x06;
+                frame[2] = 0x00; frame[3] = 0x30; frame[4] = 0x00; frame[5] = 0x06; // 0x0030~0x0035 实时充放电流/总压/SOC/总容量
             }
             else if (pollPhase == 1)
             {
-                frame[2] = 0x00; frame[3] = 0x60; frame[4] = 0x00; frame[5] = 0x0A;
+                frame[2] = 0x00; frame[3] = 0x60; frame[4] = 0x00; frame[5] = 0x0A; // 0x0060~0x0069 组端与单体告警/保护矩阵
             }
             else
             {
-                frame[2] = 0x00; frame[3] = 0x70; frame[4] = 0x00; frame[5] = 0x03;
+                frame[2] = 0x00; frame[3] = 0x70; frame[4] = 0x00; frame[5] = 0x05; // 0x0070~0x0074 CV/截止点/最大充放限流/状态字
             }
             ushort crc = ModbusCrc.Calculate(frame, 6);
             frame[6] = (byte)(crc >> 8);
@@ -807,8 +1094,17 @@ namespace BMS_Protocol_Simulator
         public bool TryDecodeMasterResponse(byte[] rxBuffer, int rxLength, BmsDataModel model, out string decodedInfo)
         {
             decodedInfo = "";
-            if (rxLength < 8) return false;
+            if (rxLength < 7) return false;
             if (!ModbusCrc.Check(rxBuffer, rxLength)) return false;
+            if (rxBuffer[1] != 0x03 && rxBuffer[1] != 0x06) return false;
+
+            if (rxBuffer[1] == 0x06)
+            {
+                ushort addr = (ushort)((rxBuffer[2] << 8) | rxBuffer[3]);
+                ushort val = (ushort)((rxBuffer[4] << 8) | rxBuffer[5]);
+                decodedInfo = string.Format("[VOLTRONIC] 从机确认写入: 寄存器 0x{0:X4} = 0x{1:X4}", addr, val);
+                return true;
+            }
 
             int dataOffset = 4;
             int regCount = 0;
@@ -828,17 +1124,43 @@ namespace BMS_Protocol_Simulator
 
             lock (model.SyncRoot)
             {
-                if (regCount == 6) // Phase 1: 0x0030
+                if (regCount == 6) // Phase 0: 0x0030~0x0035 模拟量
                 {
+                    double chgI = ((rxBuffer[dataOffset] << 8) | rxBuffer[dataOffset + 1]) / 10.0;
+                    double disI = ((rxBuffer[dataOffset + 2] << 8) | rxBuffer[dataOffset + 3]) / 10.0;
+                    model.Current = chgI > 0 ? chgI : -disI;
                     model.Voltage = ((rxBuffer[dataOffset + 4] << 8) | rxBuffer[dataOffset + 5]) / 10.0;
                     model.SOC = (rxBuffer[dataOffset + 6] << 8) | rxBuffer[dataOffset + 7];
                     uint capMah = ((uint)rxBuffer[dataOffset + 8] << 24) | ((uint)rxBuffer[dataOffset + 9] << 16) |
                                   ((uint)rxBuffer[dataOffset + 10] << 8) | (uint)rxBuffer[dataOffset + 11];
                     model.FullCapacity = capMah / 1000.0;
-                    decodedInfo = string.Format("[VOLTRONIC] 解析 Info 成功: 电压={0:F1}V, SOC={1:F0}%, 容量={2:F1}Ah", model.Voltage, model.SOC, model.FullCapacity);
+                    decodedInfo = string.Format("[VOLTRONIC] 模拟量遥测: 电压={0:F1}V, 电流={1:F1}A, SOC={2:F0}%, 容量={3:F1}Ah", model.Voltage, model.Current, model.SOC, model.FullCapacity);
                     return true;
                 }
-                else if (regCount >= 3 && regCount <= 5) // Phase 3: 0x0070
+                else if (regCount == 10) // Phase 1: 0x0060~0x0069 告警与保护状态
+                {
+                    ushort s0 = (ushort)((rxBuffer[dataOffset] << 8) | rxBuffer[dataOffset + 1]);     // 0x0060 组端过压
+                    ushort s1 = (ushort)((rxBuffer[dataOffset + 2] << 8) | rxBuffer[dataOffset + 3]); // 0x0061 组端欠压
+                    ushort s2 = (ushort)((rxBuffer[dataOffset + 4] << 8) | rxBuffer[dataOffset + 5]); // 0x0062 单体过压
+                    ushort s3 = (ushort)((rxBuffer[dataOffset + 6] << 8) | rxBuffer[dataOffset + 7]); // 0x0063 单体欠压
+                    ushort s4 = (ushort)((rxBuffer[dataOffset + 8] << 8) | rxBuffer[dataOffset + 9]); // 0x0064 充电过流
+                    ushort s5 = (ushort)((rxBuffer[dataOffset + 10] << 8) | rxBuffer[dataOffset + 11]); // 0x0065 放电过流
+                    ushort s6 = (ushort)((rxBuffer[dataOffset + 12] << 8) | rxBuffer[dataOffset + 13]); // 0x0066 充电温度
+                    ushort s7 = (ushort)((rxBuffer[dataOffset + 14] << 8) | rxBuffer[dataOffset + 15]); // 0x0067 放电温度
+
+                    model.WarnGlobalOverVolt = s0 == 0x02;
+                    model.WarnGlobalUnderVolt = s1 == 0x01;
+                    model.WarnSingleOverVolt = s2 == 0x02;
+                    model.WarnSingleUnderVolt = s3 == 0x01;
+                    model.WarnOverCurrent = (s4 == 0x02 || s5 == 0x02);
+                    model.WarnHighTemp = (s6 == 0x02 || s7 == 0x02);
+                    model.WarnLowTemp = (s6 == 0x01 || s7 == 0x01);
+
+                    decodedInfo = string.Format("[VOLTRONIC] 告警矩阵遥测更新完成 (过压={0}, 欠压={1}, 过流={2}, 温态={3})",
+                        s0, s1, s4, s6);
+                    return true;
+                }
+                else if (regCount >= 3 && regCount <= 5) // Phase 2: 0x0070~0x0074 充放电控制参数
                 {
                     model.CVVoltage = ((rxBuffer[dataOffset] << 8) | rxBuffer[dataOffset + 1]) / 10.0;
                     if (regCount >= 4)
@@ -847,11 +1169,16 @@ namespace BMS_Protocol_Simulator
                         model.MaxChargeCurrent = ((rxBuffer[dataOffset + 4] << 8) | rxBuffer[dataOffset + 5]) / 10.0;
                         model.MaxDischargeCurrent = ((rxBuffer[dataOffset + 6] << 8) | rxBuffer[dataOffset + 7]) / 10.0;
                     }
-                    else
+                    if (regCount >= 5)
                     {
-                        model.MaxChargeCurrent = ((rxBuffer[dataOffset + 4] << 8) | rxBuffer[dataOffset + 5]) / 10.0;
+                        ushort st74 = (ushort)((rxBuffer[dataOffset + 8] << 8) | rxBuffer[dataOffset + 9]);
+                        model.StatusChargeEnable = (st74 & (1 << 7)) != 0;
+                        model.StatusDischargeEnable = (st74 & (1 << 6)) != 0;
+                        model.StatusForceCharge = (st74 & (1 << 5)) != 0;
+                        model.StatusFullCharge = (st74 & (1 << 3)) != 0;
                     }
-                    decodedInfo = string.Format("[VOLTRONIC] 解析 Config 成功: CV={0:F1}V, 限流={1:F1}A", model.CVVoltage, model.MaxChargeCurrent);
+                    decodedInfo = string.Format("[VOLTRONIC] 控制参数遥测: CV={0:F1}V, 截止={1:F1}V, 充电限流={2:F1}A, 放电限流={3:F1}A",
+                        model.CVVoltage, model.CutoffVoltage, model.MaxChargeCurrent, model.MaxDischargeCurrent);
                     return true;
                 }
             }
@@ -1250,6 +1577,30 @@ namespace BMS_Protocol_Simulator
             return true;
         }
 
+        public int MasterPollPhaseCount
+        {
+            get { return 3; }
+        }
+
+        public byte[] BuildMasterControlFrame(byte targetId, string commandType, object param, out string description)
+        {
+            description = "";
+            if (commandType == "SHUTDOWN")
+            {
+                string cmd = string.Format("~20{0:X2}4664E00201", targetId);
+                byte[] cmdBytes = Encoding.ASCII.GetBytes(cmd);
+                ushort chk = PylonChecksum.Calculate(cmdBytes, 1, cmdBytes.Length - 1);
+                string full = cmd + chk.ToString("X4") + "\r";
+                description = string.Format("[PYLONTECH 主机下发] 64H 电池系统关机指令 (目标ID: {0:X2})", targetId);
+                return Encoding.ASCII.GetBytes(full);
+            }
+            else
+            {
+                description = "[PYLONTECH] 不支持的主机控制指令: " + commandType;
+                return null;
+            }
+        }
+
         public byte[] BuildMasterPollFrame(byte targetId, int pollPhase)
         {
             // 主机轮询: Phase 0: 61H (系统模拟量), Phase 1: 62H (系统告警), Phase 2: 63H (充放电控制)
@@ -1287,12 +1638,13 @@ namespace BMS_Protocol_Simulator
 
             lock (model.SyncRoot)
             {
-                // 如果是 61H 响应 (长度 98)
+                // 1. 61H 响应 (长度 98: 26项系统模拟量)
                 if (infoLen == 98)
                 {
                     ushort uVoltMv;
                     short sCurr10Ma;
                     byte uSoc;
+                    ushort uRemCap10Mah, uFullCap10Mah, uCycles, uSoh;
                     ushort uTempK;
 
                     if (ushort.TryParse(info.Substring(0, 4), System.Globalization.NumberStyles.HexNumber, null, out uVoltMv))
@@ -1304,19 +1656,66 @@ namespace BMS_Protocol_Simulator
                     if (byte.TryParse(info.Substring(8, 2), System.Globalization.NumberStyles.HexNumber, null, out uSoc))
                         model.SOC = uSoc;
 
+                    if (ushort.TryParse(info.Substring(10, 4), System.Globalization.NumberStyles.HexNumber, null, out uRemCap10Mah))
+                        model.RemainingCapacity = uRemCap10Mah / 100.0;
+
+                    if (ushort.TryParse(info.Substring(14, 4), System.Globalization.NumberStyles.HexNumber, null, out uFullCap10Mah))
+                        model.FullCapacity = uFullCap10Mah / 100.0;
+
+                    if (ushort.TryParse(info.Substring(18, 4), System.Globalization.NumberStyles.HexNumber, null, out uCycles))
+                        model.CycleCount = uCycles;
+
+                    if (ushort.TryParse(info.Substring(22, 4), System.Globalization.NumberStyles.HexNumber, null, out uSoh))
+                        if (uSoh > 0 && uSoh <= 100) model.SOH = uSoh;
+
                     if (ushort.TryParse(info.Substring(26, 4), System.Globalization.NumberStyles.HexNumber, null, out uTempK))
                         model.Temperature = (uTempK - 2731) / 10.0;
 
-                    decodedInfo = string.Format("[PYLON] 解析 61H 成功: 电压={0:F2}V, 电流={1:F2}A, SOC={2:F0}%, 温度={3:F1}°C",
-                        model.Voltage, model.Current, model.SOC, model.Temperature);
+                    decodedInfo = string.Format("[PYLON] 解析 61H 成功: 电压={0:F2}V, 电流={1:F2}A, SOC={2:F0}%, 容量={3:F1}/{4:F1}Ah, 温度={5:F1}°C",
+                        model.Voltage, model.Current, model.SOC, model.RemainingCapacity, model.FullCapacity, model.Temperature);
                     return true;
                 }
-                // 如果是 63H 响应 (长度 18)
+                // 2. 62H 响应 (系统告警与保护状态字)
+                else if (infoLen == 8)
+                {
+                    byte warn1, warn2, prot1, prot2;
+                    if (byte.TryParse(info.Substring(0, 2), System.Globalization.NumberStyles.HexNumber, null, out warn1) &&
+                        byte.TryParse(info.Substring(2, 2), System.Globalization.NumberStyles.HexNumber, null, out warn2) &&
+                        byte.TryParse(info.Substring(4, 2), System.Globalization.NumberStyles.HexNumber, null, out prot1) &&
+                        byte.TryParse(info.Substring(6, 2), System.Globalization.NumberStyles.HexNumber, null, out prot2))
+                    {
+                        model.WarnGlobalOverVolt = (warn1 & 0x80) != 0;
+                        model.WarnGlobalUnderVolt = (warn1 & 0x40) != 0;
+                        model.WarnSingleOverVolt = (warn1 & 0x20) != 0;
+                        model.WarnSingleUnderVolt = (warn1 & 0x10) != 0;
+                        model.WarnHighTemp = (warn1 & 0x0A) != 0;
+                        model.WarnLowTemp = (warn1 & 0x04) != 0;
+                        model.WarnVoltDiff = (warn1 & 0x01) != 0 || (warn2 & 0x80) != 0;
+                        model.WarnOverCurrent = (warn2 & 0x60) != 0;
+
+                        model.ProtOverVolt = (prot1 & 0xA0) != 0;
+                        model.ProtUnderVolt = (prot1 & 0x50) != 0;
+                        model.ProtHighTemp = (prot1 & 0x0A) != 0;
+                        model.ProtUnderTemp = (prot1 & 0x04) != 0;
+                        model.ProtOverCurrent = (prot2 & 0x60) != 0;
+                        model.ProtSystemFault = (prot2 & 0x08) != 0;
+
+                        decodedInfo = string.Format("[PYLON] 解析 62H 状态字: 告警(0x{0:X2},0x{1:X2}) 保护(0x{2:X2},0x{3:X2})",
+                            warn1, warn2, prot1, prot2);
+                        return true;
+                    }
+                }
+                // 3. 63H 响应 (充放电控制管理)
                 else if (infoLen == 18)
                 {
-                    ushort uCvMv, uChg10Ma, uDis10Ma;
+                    ushort uCvMv, uCutoffMv, uChg10Ma, uDis10Ma;
+                    byte statusByte;
+
                     if (ushort.TryParse(info.Substring(0, 4), System.Globalization.NumberStyles.HexNumber, null, out uCvMv))
                         model.CVVoltage = uCvMv / 1000.0;
+
+                    if (ushort.TryParse(info.Substring(4, 4), System.Globalization.NumberStyles.HexNumber, null, out uCutoffMv))
+                        model.CutoffVoltage = uCutoffMv / 1000.0;
 
                     if (ushort.TryParse(info.Substring(8, 4), System.Globalization.NumberStyles.HexNumber, null, out uChg10Ma))
                         model.MaxChargeCurrent = uChg10Ma / 100.0;
@@ -1324,11 +1723,19 @@ namespace BMS_Protocol_Simulator
                     if (ushort.TryParse(info.Substring(12, 4), System.Globalization.NumberStyles.HexNumber, null, out uDis10Ma))
                         model.MaxDischargeCurrent = uDis10Ma / 100.0;
 
-                    decodedInfo = string.Format("[PYLON] 解析 63H 成功: CV={0:F2}V, 最大充电电流={1:F1}A, 最大放电电流={2:F1}A",
-                        model.CVVoltage, model.MaxChargeCurrent, model.MaxDischargeCurrent);
+                    if (byte.TryParse(info.Substring(16, 2), System.Globalization.NumberStyles.HexNumber, null, out statusByte))
+                    {
+                        model.StatusChargeEnable = (statusByte & 0x80) != 0;
+                        model.StatusDischargeEnable = (statusByte & 0x40) != 0;
+                        model.StatusForceCharge = (statusByte & 0x20) != 0;
+                        model.StatusFullCharge = (statusByte & 0x10) != 0;
+                    }
+
+                    decodedInfo = string.Format("[PYLON] 解析 63H 成功: CV={0:F2}V, 截止={1:F2}V, 最大充电限流={2:F1}A, 最大放电限流={3:F1}A",
+                        model.CVVoltage, model.CutoffVoltage, model.MaxChargeCurrent, model.MaxDischargeCurrent);
                     return true;
                 }
-                // 如果是 42H 响应 (单包模拟量)
+                // 4. 42H 响应 (单包模拟量)
                 else if (infoLen >= 30 && info.StartsWith("01"))
                 {
                     int cellCount;
