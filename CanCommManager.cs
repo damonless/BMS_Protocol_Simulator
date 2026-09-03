@@ -138,23 +138,42 @@ namespace BMS_Protocol_Simulator
             {
                 string asciiCmd;
                 StringBuilder sb = new StringBuilder();
-                if (frame.IsExtended)
+                if (frame.IsRemote)
                 {
-                    sb.Append("T");
-                    sb.Append((frame.Id & 0x1FFFFFFF).ToString("X8"));
+                    if (frame.IsExtended)
+                    {
+                        sb.Append("R");
+                        sb.Append((frame.Id & 0x1FFFFFFF).ToString("X8"));
+                    }
+                    else
+                    {
+                        sb.Append("r");
+                        sb.Append((frame.Id & 0x7FF).ToString("X3"));
+                    }
+                    sb.Append(((int)frame.Dlc & 0xF).ToString("X1"));
+                    sb.Append("\r");
                 }
                 else
                 {
-                    sb.Append("t");
-                    sb.Append((frame.Id & 0x7FF).ToString("X3"));
-                }
+                    if (frame.IsExtended)
+                    {
+                        sb.Append("T");
+                        sb.Append((frame.Id & 0x1FFFFFFF).ToString("X8"));
+                    }
+                    else
+                    {
+                        sb.Append("t");
+                        sb.Append((frame.Id & 0x7FF).ToString("X3"));
+                    }
 
-                sb.Append(frame.Dlc.ToString("X1"));
-                for (int i = 0; i < frame.Dlc; i++)
-                {
-                    sb.Append(frame.Data[i].ToString("X2"));
+                    int dlc = Math.Min((int)frame.Dlc, frame.Data != null ? frame.Data.Length : 0);
+                    sb.Append(dlc.ToString("X1"));
+                    for (int i = 0; i < dlc; i++)
+                    {
+                        sb.Append(frame.Data[i].ToString("X2"));
+                    }
+                    sb.Append("\r");
                 }
-                sb.Append("\r");
                 asciiCmd = sb.ToString();
 
                 byte[] bytes = Encoding.ASCII.GetBytes(asciiCmd);
@@ -215,7 +234,8 @@ namespace BMS_Protocol_Simulator
                 }
                 catch (Exception ex)
                 {
-                    if (_isRunning && OnError != null)
+                    if (!_isRunning) break;
+                    if (OnError != null)
                     {
                         OnError(this, string.Format("SLCAN 接收异常: {0}", ex.Message));
                     }
@@ -269,6 +289,30 @@ namespace BMS_Protocol_Simulator
                         OnFrameReceived(this, frame);
                     }
                 }
+                else if (type == 'r') // 标准远程帧: rIIIL
+                {
+                    if (line.Length < 5) return;
+                    uint id = Convert.ToUInt32(line.Substring(1, 3), 16);
+                    byte dlc = Convert.ToByte(line.Substring(4, 1), 16);
+                    CanFrame frame = new CanFrame(id, null, false, true);
+                    frame.Dlc = Math.Min(dlc, (byte)8);
+                    if (OnFrameReceived != null)
+                    {
+                        OnFrameReceived(this, frame);
+                    }
+                }
+                else if (type == 'R') // 扩展远程帧: RIIIIIIIIL
+                {
+                    if (line.Length < 10) return;
+                    uint id = Convert.ToUInt32(line.Substring(1, 8), 16);
+                    byte dlc = Convert.ToByte(line.Substring(9, 1), 16);
+                    CanFrame frame = new CanFrame(id, null, true, true);
+                    frame.Dlc = Math.Min(dlc, (byte)8);
+                    if (OnFrameReceived != null)
+                    {
+                        OnFrameReceived(this, frame);
+                    }
+                }
             }
             catch { }
         }
@@ -276,11 +320,6 @@ namespace BMS_Protocol_Simulator
         public void Close()
         {
             _isRunning = false;
-            if (_rxThread != null)
-            {
-                try { _rxThread.Join(200); } catch { }
-                _rxThread = null;
-            }
 
             if (_port != null)
             {
@@ -288,16 +327,22 @@ namespace BMS_Protocol_Simulator
                 {
                     if (_port.IsOpen)
                     {
-                        WriteCommand("C");
+                        try { WriteCommand("C"); } catch { }
                         _port.Close();
                     }
                 }
                 catch { }
                 finally
                 {
-                    _port.Dispose();
+                    try { _port.Dispose(); } catch { }
                     _port = null;
                 }
+            }
+
+            if (_rxThread != null)
+            {
+                try { _rxThread.Join(300); } catch { }
+                _rxThread = null;
             }
 
             if (OnStatusChanged != null)
@@ -392,6 +437,7 @@ namespace BMS_Protocol_Simulator
         private Thread _rxThread;
         private volatile bool _isRunning = false;
         private readonly object _txLock = new object();
+        private bool _isDeviceOpened = false;
 
         public string DriverName
         {
@@ -470,6 +516,7 @@ namespace BMS_Protocol_Simulator
                 {
                     throw new Exception(string.Format("打开 CAN 设备失败 (类型:{0}, 索引:{1})，请检查硬件连接或是否被其它程序占用。", DevType, DevIndex));
                 }
+                _isDeviceOpened = true;
 
                 ControlCanNative.VCI_INIT_CONFIG cfg = new ControlCanNative.VCI_INIT_CONFIG();
                 cfg.AccCode = 0x00000000;
@@ -486,6 +533,7 @@ namespace BMS_Protocol_Simulator
                 if (ret != ControlCanNative.STATUS_OK)
                 {
                     ControlCanNative.VCI_CloseDevice(DevType, DevIndex);
+                    _isDeviceOpened = false;
                     throw new Exception(string.Format("初始化 CAN{0} 通道失败。", CanIndex));
                 }
 
@@ -493,6 +541,7 @@ namespace BMS_Protocol_Simulator
                 if (ret != ControlCanNative.STATUS_OK)
                 {
                     ControlCanNative.VCI_CloseDevice(DevType, DevIndex);
+                    _isDeviceOpened = false;
                     throw new Exception(string.Format("启动 CAN{0} 接收失败。", CanIndex));
                 }
 
@@ -559,7 +608,7 @@ namespace BMS_Protocol_Simulator
             obj.SendType = 0; // 正常发送
             obj.RemoteFlag = (byte)(frame.IsRemote ? 1 : 0);
             obj.ExternFlag = (byte)(frame.IsExtended ? 1 : 0);
-            obj.DataLen = frame.Dlc;
+            obj.DataLen = Math.Min(frame.Dlc, (byte)8);
             obj.Data = new byte[8];
             if (frame.Data != null)
             {
@@ -600,13 +649,21 @@ namespace BMS_Protocol_Simulator
                         {
                             ControlCanNative.VCI_CAN_OBJ obj = buffer[i];
                             CanFrame frame = new CanFrame(obj.ID, obj.Data, obj.ExternFlag != 0, obj.RemoteFlag != 0);
-                            frame.Dlc = obj.DataLen;
+                            frame.Dlc = Math.Min(obj.DataLen, (byte)8);
 
                             if (OnFrameReceived != null)
                             {
                                 OnFrameReceived(this, frame);
                             }
                         }
+                    }
+                    else if (rxCount == 0xFFFFFFFF)
+                    {
+                        if (OnError != null && _isRunning)
+                        {
+                            OnError(this, "ControlCAN 底层通信错误或设备已断开连接 (0xFFFFFFFF)");
+                        }
+                        Thread.Sleep(50);
                     }
                     else
                     {
@@ -635,12 +692,19 @@ namespace BMS_Protocol_Simulator
                 _rxThread = null;
             }
 
-            try
+            if (_isDeviceOpened)
             {
-                ControlCanNative.VCI_ResetCAN(DevType, DevIndex, CanIndex);
-                ControlCanNative.VCI_CloseDevice(DevType, DevIndex);
+                try
+                {
+                    ControlCanNative.VCI_ResetCAN(DevType, DevIndex, CanIndex);
+                    ControlCanNative.VCI_CloseDevice(DevType, DevIndex);
+                }
+                catch { }
+                finally
+                {
+                    _isDeviceOpened = false;
+                }
             }
-            catch { }
 
             if (OnStatusChanged != null)
             {
@@ -755,7 +819,23 @@ namespace BMS_Protocol_Simulator
                 OnLogEvent(this, new LogEventArgs(false, frame.GetRawData(), summary, 0));
             }
 
-            if (CurrentWorkMode == WorkMode.MasterPoller)
+            if (CurrentWorkMode == WorkMode.SlaveSimulator)
+            {
+                // 逆变器下发 0x305 握手信号，从机立即应答 0x305 握手响应帧 (8字节全00)
+                if (frame.Id == HanchuCanProtocol.ID_INVERTER_HANDSHAKE)
+                {
+                    CanFrame resp = HanchuCanProtocol.BuildInverterHandshakeFrame();
+                    if (_driver != null && _driver.SendFrame(resp))
+                    {
+                        TxCount++;
+                        if (OnLogEvent != null)
+                        {
+                            OnLogEvent(this, new LogEventArgs(true, resp.GetRawData(), "[HANCHU 0x305] 响应逆变器握手保活帧", 0));
+                        }
+                    }
+                }
+            }
+            else if (CurrentWorkMode == WorkMode.MasterPoller)
             {
                 // 主机模式下收到电池包的遥测帧，更新遥测和保活时间
                 LastResponseTimeMs = _watch.ElapsedMilliseconds;

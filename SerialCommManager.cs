@@ -7,24 +7,6 @@ using System.Text;
 
 namespace BMS_Protocol_Simulator
 {
-    public class LogEventArgs : EventArgs
-    {
-        public bool IsTx { get; private set; }
-        public byte[] RawBytes { get; private set; }
-        public string Summary { get; private set; }
-        public long LatencyMs { get; private set; }
-        public DateTime Timestamp { get; private set; }
-
-        public LogEventArgs(bool isTx, byte[] rawBytes, string summary, long latencyMs = 0)
-        {
-            IsTx = isTx;
-            RawBytes = rawBytes;
-            Summary = summary;
-            LatencyMs = latencyMs;
-            Timestamp = DateTime.Now;
-        }
-    }
-
     public class DetectionEventArgs : EventArgs
     {
         public DetectionResult Result { get; private set; }

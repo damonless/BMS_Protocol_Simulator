@@ -9,16 +9,23 @@ namespace BMS_Protocol_Simulator
     /// </summary>
     public class CanFrame
     {
+        private byte _dlc;
+
         public uint Id { get; set; }
         public bool IsExtended { get; set; }
         public bool IsRemote { get; set; }
-        public byte Dlc { get; set; }
+        public byte Dlc
+        {
+            get { return _dlc; }
+            set { _dlc = Math.Min(value, (byte)8); }
+        }
         public byte[] Data { get; set; }
         public DateTime Timestamp { get; set; }
 
         public CanFrame()
         {
             Data = new byte[8];
+            _dlc = 0;
             Timestamp = DateTime.Now;
         }
 
@@ -27,11 +34,11 @@ namespace BMS_Protocol_Simulator
             Id = id;
             IsExtended = isExtended;
             IsRemote = isRemote;
-            Dlc = (byte)(data != null ? Math.Min(data.Length, 8) : 0);
+            _dlc = (byte)(data != null ? Math.Min(data.Length, 8) : 0);
             Data = new byte[8];
-            if (data != null && Dlc > 0)
+            if (data != null && _dlc > 0)
             {
-                Array.Copy(data, Data, Dlc);
+                Array.Copy(data, Data, _dlc);
             }
             Timestamp = DateTime.Now;
         }
@@ -40,7 +47,8 @@ namespace BMS_Protocol_Simulator
         {
             if (Data == null || Dlc == 0) return "";
             StringBuilder sb = new StringBuilder();
-            for (int i = 0; i < Dlc; i++)
+            int len = Math.Min((int)Dlc, Data.Length);
+            for (int i = 0; i < len; i++)
             {
                 if (i > 0) sb.Append(" ");
                 sb.Append(Data[i].ToString("X2"));
@@ -50,10 +58,11 @@ namespace BMS_Protocol_Simulator
 
         public byte[] GetRawData()
         {
-            byte[] res = new byte[Dlc];
-            if (Data != null && Dlc > 0)
+            int len = Math.Min((int)Dlc, Data != null ? Data.Length : 0);
+            byte[] res = new byte[len];
+            if (Data != null && len > 0)
             {
-                Array.Copy(Data, res, Dlc);
+                Array.Copy(Data, res, len);
             }
             return res;
         }
@@ -86,27 +95,30 @@ namespace BMS_Protocol_Simulator
         /// <summary>
         /// 0x351: 充放电管理参数
         /// Byte 0-1: 充电推荐电压 (0.1V, ushort, LE)
-        /// Byte 2-3: 最大充电电流限制 (0.1A, short, LE)
-        /// Byte 4-5: 最大放电电流限制 (0.1A, short, LE)
+        /// Byte 2-3: 最大充电电流限制 (0.1A, ushort, LE)
+        /// Byte 4-5: 最大放电电流限制 (0.1A, ushort, LE)
         /// Byte 6-7: 放电截止电压 (0.1V, ushort, LE)
         /// </summary>
         public static CanFrame Build0x351Frame(BmsDataModel model, out string summary)
         {
             byte[] data = new byte[8];
             ushort cv = 0;
-            short maxChgI = 0;
-            short maxDisI = 0;
+            ushort maxChgI = 0;
+            ushort maxDisI = 0;
             ushort cutoff = 0;
 
             lock (model.SyncRoot)
             {
                 cv = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.CVVoltage * 10.0)));
-                // 若充放电禁止或保护跳闸，限流归零
-                double effChgI = model.StatusChargeEnable ? model.MaxChargeCurrent : 0.0;
-                double effDisI = model.StatusDischargeEnable ? model.MaxDischargeCurrent : 0.0;
+                
+                // 充放电使能与保护状态联动：若保护跳闸或禁止充放，限流归零
+                bool canCharge = model.StatusChargeEnable && !model.ProtOverVolt && !model.ProtHighTemp && !model.ProtSystemFault && !model.ProtShortCircuit;
+                bool canDischarge = model.StatusDischargeEnable && !model.ProtUnderVolt && !model.ProtUnderTemp && !model.ProtSystemFault && !model.ProtShortCircuit;
+                double effChgI = canCharge ? model.MaxChargeCurrent : 0.0;
+                double effDisI = canDischarge ? model.MaxDischargeCurrent : 0.0;
 
-                maxChgI = (short)Math.Max(0, Math.Min(32767, Math.Round(effChgI * 10.0)));
-                maxDisI = (short)Math.Max(0, Math.Min(32767, Math.Round(effDisI * 10.0)));
+                maxChgI = (ushort)Math.Max(0, Math.Min(65535, Math.Round(effChgI * 10.0)));
+                maxDisI = (ushort)Math.Max(0, Math.Min(65535, Math.Round(effDisI * 10.0)));
                 cutoff = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.CutoffVoltage * 10.0)));
 
                 data[0] = (byte)(cv & 0xFF);
@@ -170,7 +182,7 @@ namespace BMS_Protocol_Simulator
 
         /// <summary>
         /// 0x356: Pack voltage (0.01V), Pack current (0.1A, signed), Max Cell temp (0.1℃, signed), Min Cell temp (0.1℃, signed)
-        /// Byte 0-1: Pack voltage (0.01V, short, LE)
+        /// Byte 0-1: Pack voltage (0.01V, ushort, LE, 支持高达 655.35V)
         /// Byte 2-3: Pack current (0.1A, signed short, LE)
         /// Byte 4-5: Max Cell temp (0.1℃, signed short, LE)
         /// Byte 6-7: Min Cell temp (0.1℃, signed short, LE)
@@ -178,14 +190,14 @@ namespace BMS_Protocol_Simulator
         public static CanFrame Build0x356Frame(BmsDataModel model, out string summary)
         {
             byte[] data = new byte[8];
-            short voltRaw = 0;
+            ushort voltRaw = 0;
             short currRaw = 0;
             short maxTempRaw = 0;
             short minTempRaw = 0;
 
             lock (model.SyncRoot)
             {
-                voltRaw = (short)Math.Max(-32768, Math.Min(32767, Math.Round(model.Voltage * 100.0)));
+                voltRaw = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.Voltage * 100.0)));
                 currRaw = (short)Math.Max(-32768, Math.Min(32767, Math.Round(model.Current * 10.0)));
                 maxTempRaw = (short)Math.Max(-32768, Math.Min(32767, Math.Round(model.Temperature * 10.0)));
                 minTempRaw = (short)Math.Max(-32768, Math.Min(32767, Math.Round((model.Temperature - 0.6) * 10.0)));
@@ -225,32 +237,54 @@ namespace BMS_Protocol_Simulator
             lock (model.SyncRoot)
             {
                 byte p1 = 0;
-                if (model.ProtHighTemp) p1 |= (1 << 0);
-                if (model.ProtUnderTemp) p1 |= (1 << 1);
+                if (model.ProtHighTemp)
+                {
+                    if (model.Current < 0) p1 |= (1 << 0); // 放电过温保护
+                    else if (model.Current == 0) p1 |= (1 << 0);
+                }
+                if (model.ProtUnderTemp)
+                {
+                    if (model.Current < 0) p1 |= (1 << 1); // 放电低温保护
+                    else if (model.Current == 0) p1 |= (1 << 1);
+                }
                 if (model.ProtUnderVolt) p1 |= (1 << 2);
                 if (model.ProtOverVolt) p1 |= (1 << 3);
-                if (model.ProtOverCurrent && model.Current < 0) p1 |= (1 << 4);
+                if (model.ProtOverCurrent)
+                {
+                    if (model.Current < 0) p1 |= (1 << 4);      // 放电过流保护 (Bit 4)
+                    else if (model.Current > 0) p1 |= (1 << 7); // 充电过流保护 (Bit 7)
+                    else { p1 |= (1 << 4); p1 |= (1 << 7); }    // 静态模拟时两者均置位
+                }
                 if (model.ProtSystemFault) p1 |= (1 << 5);
                 if (model.ProtShortCircuit) p1 |= (1 << 6);
-                if (model.ProtOverCurrent && model.Current >= 0) p1 |= (1 << 7);
-                else if (model.ProtOverCurrent) p1 |= (1 << 7);
 
                 byte p2 = 0;
-                if (model.ProtHighTemp) p2 |= (1 << 0);
-                if (model.ProtUnderTemp) p2 |= (1 << 1);
-                if (model.ProtUnderVolt) p2 |= (1 << 2);
-                if (model.ProtOverVolt) p2 |= (1 << 3);
+                if (model.ProtHighTemp)
+                {
+                    if (model.Current > 0) p2 |= (1 << 0); // 充电过温保护
+                    else if (model.Current == 0) p2 |= (1 << 0);
+                }
+                if (model.ProtUnderTemp)
+                {
+                    if (model.Current > 0) p2 |= (1 << 1); // 充电低温保护
+                    else if (model.Current == 0) p2 |= (1 << 1);
+                }
+                if (model.ProtUnderVolt) p2 |= (1 << 2); // 组端欠压保护
+                if (model.ProtOverVolt) p2 |= (1 << 3);  // 组端过压保护
                 if (model.ProtSoftStart) p2 |= (1 << 4);
 
                 byte a1 = 0;
                 if (model.WarnHighTemp) a1 |= (1 << 0);
                 if (model.WarnLowTemp) a1 |= (1 << 1);
-                if (model.WarnSingleUnderVolt || model.WarnGlobalUnderVolt) a1 |= (1 << 2);
-                if (model.WarnSingleOverVolt || model.WarnGlobalOverVolt) a1 |= (1 << 3);
-                if (model.WarnOverCurrent && model.Current < 0) a1 |= (1 << 4);
+                if (model.WarnSingleUnderVolt) a1 |= (1 << 2);
+                if (model.WarnSingleOverVolt) a1 |= (1 << 3);
+                if (model.WarnOverCurrent)
+                {
+                    if (model.Current < 0) a1 |= (1 << 4);      // 放电过流告警 (Bit 4)
+                    else if (model.Current > 0) a1 |= (1 << 7); // 充电过流告警 (Bit 7)
+                    else { a1 |= (1 << 4); a1 |= (1 << 7); }
+                }
                 if (model.WarnVoltDiff) a1 |= (1 << 5);
-                if (model.WarnOverCurrent && model.Current >= 0) a1 |= (1 << 7);
-                else if (model.WarnOverCurrent) a1 |= (1 << 7);
 
                 byte a2 = 0;
                 if (model.WarnHighTemp) a2 |= (1 << 0);
@@ -296,8 +330,12 @@ namespace BMS_Protocol_Simulator
 
             lock (model.SyncRoot)
             {
-                chgEn = model.StatusChargeEnable;
-                disEn = model.StatusDischargeEnable;
+                // 充放使能状态与保护跳闸联动 (过压/过温/故障跳闸时禁充，欠压/低温/故障跳闸时禁放)
+                bool effChgEn = model.StatusChargeEnable && !model.ProtOverVolt && !model.ProtHighTemp && !model.ProtSystemFault && !model.ProtShortCircuit;
+                bool effDisEn = model.StatusDischargeEnable && !model.ProtUnderVolt && !model.ProtUnderTemp && !model.ProtSystemFault && !model.ProtShortCircuit;
+
+                chgEn = effChgEn;
+                disEn = effDisEn;
                 forceChg = model.StatusForceCharge;
                 fullChg = model.StatusFullCharge;
                 cycles = (ushort)Math.Max(0, Math.Min(65535, model.CycleCount));
@@ -369,8 +407,8 @@ namespace BMS_Protocol_Simulator
             if (frame.Id == ID_CHARGE_DISCHARGE_MGMT && frame.Dlc >= 8)
             {
                 ushort cvRaw = (ushort)(frame.Data[0] | (frame.Data[1] << 8));
-                short chgIRaw = (short)(frame.Data[2] | (frame.Data[3] << 8));
-                short disIRaw = (short)(frame.Data[4] | (frame.Data[5] << 8));
+                ushort chgIRaw = (ushort)(frame.Data[2] | (frame.Data[3] << 8));
+                ushort disIRaw = (ushort)(frame.Data[4] | (frame.Data[5] << 8));
                 ushort cutoffRaw = (ushort)(frame.Data[6] | (frame.Data[7] << 8));
 
                 lock (model.SyncRoot)
@@ -406,7 +444,7 @@ namespace BMS_Protocol_Simulator
 
             if (frame.Id == ID_PACK_VOLT_CURR_TEMP && frame.Dlc >= 8)
             {
-                short voltRaw = (short)(frame.Data[0] | (frame.Data[1] << 8));
+                ushort voltRaw = (ushort)(frame.Data[0] | (frame.Data[1] << 8));
                 short currRaw = (short)(frame.Data[2] | (frame.Data[3] << 8));
                 short maxTempRaw = (short)(frame.Data[4] | (frame.Data[5] << 8));
                 short minTempRaw = (short)(frame.Data[6] | (frame.Data[7] << 8));
@@ -487,7 +525,8 @@ namespace BMS_Protocol_Simulator
 
             if (frame.Id == ID_MANUFACTURER_NAME && frame.Dlc >= 6)
             {
-                string vendor = Encoding.ASCII.GetString(frame.Data, 0, Math.Min((int)frame.Dlc, 8)).TrimEnd('\0', ' ');
+                int len = Math.Min((int)frame.Dlc, frame.Data != null ? frame.Data.Length : 0);
+                string vendor = len > 0 ? Encoding.ASCII.GetString(frame.Data, 0, len).TrimEnd('\0', ' ') : "";
                 decodedSummary = string.Format("[HANCHU 0x35E] 厂商标识 -> \"{0}\"", vendor);
                 return true;
             }

@@ -806,6 +806,7 @@ namespace BMS_Protocol_Simulator
             cboBaud = new ComboBox { Width = 75, DropDownStyle = ComboBoxStyle.DropDownList };
             cboBaud.Items.AddRange(new object[] { "9600", "2400", "4800", "19200", "38400", "57600", "115200" });
             cboBaud.SelectedIndex = 0;
+            cboBaud.SelectedIndexChanged += delegate(object s, EventArgs e) { if (IsCanMode) UpdateProtocolBadge(); };
             flpTopRow1.Controls.Add(cboBaud);
 
             Label lblProt = new Label { Text = "协议:", AutoSize = true, Margin = new Padding(4, 6, 2, 0) };
@@ -2295,8 +2296,9 @@ namespace BMS_Protocol_Simulator
 
             if (IsCanMode)
             {
+                string baud = (cboBaud != null && cboBaud.SelectedItem != null) ? cboBaud.SelectedItem.ToString() : "500k";
                 string modeStr = (_canComm != null && _canComm.CurrentWorkMode == WorkMode.MasterPoller) ? "[主机轮询模式]" : "[从机模拟广播]";
-                lblProtocolBadge.Text = string.Format("协议: 江苏汉储 CAN BUS V1.0.1 (500k LE) {0}", modeStr);
+                lblProtocolBadge.Text = string.Format("协议: 江苏汉储 CAN BUS V1.0.1 ({0} LE) {1}", baud, modeStr);
             }
             else
             {
