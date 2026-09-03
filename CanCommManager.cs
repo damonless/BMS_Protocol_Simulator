@@ -863,6 +863,13 @@ namespace BMS_Protocol_Simulator
             }
         }
 
+        public void ResetStatistics()
+        {
+            RxCount = 0;
+            TxCount = 0;
+            ErrorCount = 0;
+        }
+
         public void Close()
         {
             _isRunning = false;

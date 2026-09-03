@@ -593,10 +593,24 @@ namespace BMS_Protocol_Simulator
         private BmsDataModel _model;
         private BmsDefaultConfig _defaultConfig;
         private SerialCommManager _comm;
+        private CanCommManager _canComm;
         private SplitContainer splitMain;
         private Button btnApplyProfile;
 
+        private bool IsCanMode
+        {
+            get { return cboInterface != null && cboInterface.SelectedIndex == 1; }
+        }
+
         // ── 顶部配置栏控件 ──
+        private ComboBox cboInterface;
+        private Label lblCanDriver;
+        private ComboBox cboCanDriver;
+        private Label lblCanChannel;
+        private ComboBox cboCanChannel;
+        private Label lblPort;
+        private Button btnRefresh;
+        private Label lblBaud;
         private ComboBox cboPort;
         private ComboBox cboBaud;
         private ComboBox cboProtocol;
@@ -675,6 +689,11 @@ namespace BMS_Protocol_Simulator
             _comm.OnInverterDetected += Comm_OnInverterDetected;
             _comm.OnAutoAdapted += Comm_OnAutoAdapted;
 
+            _canComm = new CanCommManager(_model);
+            _canComm.OnLogEvent += Comm_OnLogEvent;
+            _canComm.OnStatusChanged += Comm_OnStatusChanged;
+            _canComm.OnMasterTelemetryUpdated += Comm_OnMasterTelemetryUpdated;
+
             BuildUI();
             RefreshPorts();
             SyncModelToUI();
@@ -684,7 +703,7 @@ namespace BMS_Protocol_Simulator
 
         private void BuildUI()
         {
-            this.Text = "BMS 多协议仿真与自动化测试工作台 V1.0 (CVTE / Growatt / Pylon / Voltronic)";
+            this.Text = "BMS 多协议仿真与自动化测试工作台 V1.0 (RS485 / CAN 双模支持)";
             this.Size = new Size(1200, 740);
             this.MinimumSize = new Size(1060, 640);
             this.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
@@ -745,17 +764,43 @@ namespace BMS_Protocol_Simulator
             flpTopRow1.WrapContents = false;
             flpTopRow1.AutoScroll = false;
 
-            Label lblPort = new Label { Text = "端口:", AutoSize = true, Margin = new Padding(2, 6, 2, 0) };
+            Label lblInterface = new Label { Text = "接口:", AutoSize = true, Margin = new Padding(2, 6, 2, 0) };
+            flpTopRow1.Controls.Add(lblInterface);
+
+            cboInterface = new ComboBox { Width = 68, DropDownStyle = ComboBoxStyle.DropDownList };
+            cboInterface.Items.AddRange(new object[] { "RS-485", "CAN" });
+            cboInterface.SelectedIndex = 0;
+            cboInterface.SelectedIndexChanged += delegate(object s, EventArgs e) { UpdateInterfaceUI(); };
+            flpTopRow1.Controls.Add(cboInterface);
+
+            lblCanDriver = new Label { Text = "驱动:", AutoSize = true, Margin = new Padding(4, 6, 2, 0), Visible = false };
+            flpTopRow1.Controls.Add(lblCanDriver);
+
+            cboCanDriver = new ComboBox { Width = 120, DropDownStyle = ComboBoxStyle.DropDownList, Visible = false };
+            cboCanDriver.Items.AddRange(new object[] { "CANable (SLCAN)", "USBCAN (ControlCAN)" });
+            cboCanDriver.SelectedIndex = 0;
+            cboCanDriver.SelectedIndexChanged += delegate(object s, EventArgs e) { UpdateCanDriverUI(); };
+            flpTopRow1.Controls.Add(cboCanDriver);
+
+            lblPort = new Label { Text = "端口:", AutoSize = true, Margin = new Padding(4, 6, 2, 0) };
             flpTopRow1.Controls.Add(lblPort);
 
             cboPort = new ComboBox { Width = 75, DropDownStyle = ComboBoxStyle.DropDownList };
             flpTopRow1.Controls.Add(cboPort);
 
-            Button btnRefresh = new Button { Text = "刷新", Width = 44, Height = 25, Margin = new Padding(2, 2, 6, 0) };
+            btnRefresh = new Button { Text = "刷新", Width = 44, Height = 25, Margin = new Padding(2, 2, 4, 0) };
             btnRefresh.Click += delegate(object s, EventArgs e) { RefreshPorts(); };
             flpTopRow1.Controls.Add(btnRefresh);
 
-            Label lblBaud = new Label { Text = "波特率:", AutoSize = true, Margin = new Padding(4, 6, 2, 0) };
+            lblCanChannel = new Label { Text = "通道:", AutoSize = true, Margin = new Padding(4, 6, 2, 0), Visible = false };
+            flpTopRow1.Controls.Add(lblCanChannel);
+
+            cboCanChannel = new ComboBox { Width = 55, DropDownStyle = ComboBoxStyle.DropDownList, Visible = false };
+            cboCanChannel.Items.AddRange(new object[] { "CAN1", "CAN2" });
+            cboCanChannel.SelectedIndex = 0;
+            flpTopRow1.Controls.Add(cboCanChannel);
+
+            lblBaud = new Label { Text = "波特率:", AutoSize = true, Margin = new Padding(4, 6, 2, 0) };
             flpTopRow1.Controls.Add(lblBaud);
 
             cboBaud = new ComboBox { Width = 75, DropDownStyle = ComboBoxStyle.DropDownList };
@@ -763,10 +808,10 @@ namespace BMS_Protocol_Simulator
             cboBaud.SelectedIndex = 0;
             flpTopRow1.Controls.Add(cboBaud);
 
-            Label lblProt = new Label { Text = "协议:", AutoSize = true, Margin = new Padding(6, 6, 2, 0) };
+            Label lblProt = new Label { Text = "协议:", AutoSize = true, Margin = new Padding(4, 6, 2, 0) };
             flpTopRow1.Controls.Add(lblProt);
 
-            cboProtocol = new ComboBox { Width = 100, DropDownStyle = ComboBoxStyle.DropDownList };
+            cboProtocol = new ComboBox { Width = 95, DropDownStyle = ComboBoxStyle.DropDownList };
             cboProtocol.Items.AddRange(new object[] {
                 "CVTE",
                 "GROWATT",
@@ -777,10 +822,10 @@ namespace BMS_Protocol_Simulator
             cboProtocol.SelectedIndexChanged += CboProtocol_SelectedIndexChanged;
             flpTopRow1.Controls.Add(cboProtocol);
 
-            Label lblMode = new Label { Text = "工作模式:", AutoSize = true, Margin = new Padding(6, 6, 2, 0) };
+            Label lblMode = new Label { Text = "模式:", AutoSize = true, Margin = new Padding(4, 6, 2, 0) };
             flpTopRow1.Controls.Add(lblMode);
 
-            cboWorkMode = new ComboBox { Width = 95, DropDownStyle = ComboBoxStyle.DropDownList };
+            cboWorkMode = new ComboBox { Width = 85, DropDownStyle = ComboBoxStyle.DropDownList };
             cboWorkMode.Items.AddRange(new object[] { "从机模拟", "主机轮询" });
             cboWorkMode.SelectedIndex = 0;
             cboWorkMode.SelectedIndexChanged += delegate(object s, EventArgs e) {
@@ -788,7 +833,7 @@ namespace BMS_Protocol_Simulator
             };
             flpTopRow1.Controls.Add(cboWorkMode);
 
-            btnConnect = new Button { Text = "打开串口", Width = 85, Height = 25, Margin = new Padding(8, 2, 6, 0) };
+            btnConnect = new Button { Text = "打开连接", Width = 80, Height = 25, Margin = new Padding(6, 2, 4, 0) };
             btnConnect.Click += BtnConnect_Click;
             flpTopRow1.Controls.Add(btnConnect);
 
@@ -796,7 +841,7 @@ namespace BMS_Protocol_Simulator
             {
                 Text = "未连接",
                 AutoSize = false,
-                Width = 70,
+                Width = 65,
                 Height = 22,
                 TextAlign = ContentAlignment.MiddleLeft,
                 ForeColor = Color.Gray,
@@ -859,23 +904,35 @@ namespace BMS_Protocol_Simulator
             cboPollInterval.Items.AddRange(new object[] { "100ms", "200ms", "500ms", "1000ms", "2000ms", "手动单步" });
             cboPollInterval.SelectedIndex = 2; // 默认 500ms
             cboPollInterval.SelectedIndexChanged += delegate(object s, EventArgs e) {
+                int interval = 500;
                 switch (cboPollInterval.SelectedIndex)
                 {
-                    case 0: _comm.PollIntervalMs = 100; break;
-                    case 1: _comm.PollIntervalMs = 200; break;
-                    case 2: _comm.PollIntervalMs = 500; break;
-                    case 3: _comm.PollIntervalMs = 1000; break;
-                    case 4: _comm.PollIntervalMs = 2000; break;
-                    case 5: _comm.PollIntervalMs = 0; break; // 手动单步
+                    case 0: interval = 100; break;
+                    case 1: interval = 200; break;
+                    case 2: interval = 500; break;
+                    case 3: interval = 1000; break;
+                    case 4: interval = 2000; break;
+                    case 5: interval = 0; break; // 手动单步
                 }
+                _comm.PollIntervalMs = interval;
+                if (_canComm != null) _canComm.BroadcastIntervalMs = (interval > 0 ? interval : 1000);
             };
             flpTopRow2.Controls.Add(cboPollInterval);
 
             btnPollPause = new Button { Text = "⏸ 暂停轮询", Width = 85, Height = 25, Margin = new Padding(4, 2, 6, 0), Visible = false };
             btnPollPause.Click += delegate(object s, EventArgs e) {
-                _comm.IsPollingPaused = !_comm.IsPollingPaused;
-                btnPollPause.Text = _comm.IsPollingPaused ? "▶ 恢复轮询" : "⏸ 暂停轮询";
-                lblStatusText.Text = _comm.IsPollingPaused ? "⏸ 轮询已暂停" : "▶ 轮询已恢复运行";
+                if (IsCanMode && _canComm != null)
+                {
+                    _canComm.IsPollingPaused = !_canComm.IsPollingPaused;
+                    btnPollPause.Text = _canComm.IsPollingPaused ? "▶ 恢复轮询" : "⏸ 暂停轮询";
+                    lblStatusText.Text = _canComm.IsPollingPaused ? "⏸ 轮询已暂停" : "▶ 轮询已恢复运行";
+                }
+                else
+                {
+                    _comm.IsPollingPaused = !_comm.IsPollingPaused;
+                    btnPollPause.Text = _comm.IsPollingPaused ? "▶ 恢复轮询" : "⏸ 暂停轮询";
+                    lblStatusText.Text = _comm.IsPollingPaused ? "⏸ 轮询已暂停" : "▶ 轮询已恢复运行";
+                }
             };
             flpTopRow2.Controls.Add(btnPollPause);
 
@@ -2084,6 +2141,7 @@ namespace BMS_Protocol_Simulator
             btnClearLog.Click += delegate(object s, EventArgs e) {
                 rtbLog.Clear();
                 _comm.ResetStatistics();
+                if (_canComm != null) _canComm.ResetStatistics();
                 UpdateStatsLabels();
             };
 
@@ -2100,8 +2158,123 @@ namespace BMS_Protocol_Simulator
         // ══════════════════════════════════════════════════════════
         // 6. UI 事件处理与数据同步
         // ══════════════════════════════════════════════════════════
+        private void UpdateInterfaceUI()
+        {
+            if (cboInterface.SelectedIndex == 0) // RS-485
+            {
+                lblCanDriver.Visible = false;
+                cboCanDriver.Visible = false;
+                lblCanChannel.Visible = false;
+                cboCanChannel.Visible = false;
+
+                lblPort.Text = "端口:";
+                lblPort.Visible = true;
+                cboPort.Visible = true;
+                cboPort.Width = 75;
+                btnRefresh.Visible = true;
+
+                lblBaud.Text = "波特率:";
+                lblBaud.Visible = true;
+                cboBaud.Visible = true;
+                cboBaud.Width = 75;
+
+                RefreshPorts();
+
+                cboBaud.Items.Clear();
+                cboBaud.Items.AddRange(new object[] { "9600", "2400", "4800", "19200", "38400", "57600", "115200" });
+                cboBaud.SelectedIndex = 0;
+
+                cboProtocol.Items.Clear();
+                cboProtocol.Items.AddRange(new object[] {
+                    "CVTE",
+                    "GROWATT",
+                    "VOLTRONIC",
+                    "PYLONTECH"
+                });
+                cboProtocol.SelectedIndex = 0;
+
+                btnConnect.Text = (_comm != null && _comm.IsOpen) ? "关闭串口" : "打开串口";
+                lblPortStatus.Text = (_comm != null && _comm.IsOpen) ? "● 运行中" : "未连接";
+                lblPortStatus.ForeColor = (_comm != null && _comm.IsOpen) ? Color.Green : Color.Gray;
+
+                UpdateWorkModeUI();
+            }
+            else // CAN
+            {
+                lblCanDriver.Visible = true;
+                cboCanDriver.Visible = true;
+
+                cboProtocol.Items.Clear();
+                cboProtocol.Items.AddRange(new object[] { "HANCHU CAN" });
+                cboProtocol.SelectedIndex = 0;
+
+                UpdateCanDriverUI();
+
+                btnConnect.Text = (_canComm != null && _canComm.IsOpen) ? "关闭CAN" : "打开CAN";
+                lblPortStatus.Text = (_canComm != null && _canComm.IsOpen) ? "● 运行中" : "未连接";
+                lblPortStatus.ForeColor = (_canComm != null && _canComm.IsOpen) ? Color.Green : Color.Gray;
+
+                UpdateWorkModeUI();
+            }
+        }
+
+        private void UpdateCanDriverUI()
+        {
+            if (cboCanDriver.SelectedIndex == 0) // CANable (SLCAN)
+            {
+                lblPort.Text = "串口:";
+                lblPort.Visible = true;
+                cboPort.Visible = true;
+                cboPort.Width = 75;
+                btnRefresh.Visible = true;
+
+                lblCanChannel.Visible = false;
+                cboCanChannel.Visible = false;
+
+                lblBaud.Text = "CAN速率:";
+                lblBaud.Visible = true;
+                cboBaud.Visible = true;
+                cboBaud.Width = 75;
+
+                RefreshPorts();
+
+                cboBaud.Items.Clear();
+                cboBaud.Items.AddRange(new object[] { "500k", "250k", "125k", "1000k" });
+                cboBaud.SelectedIndex = 0; // 默认 500k 符合协议
+            }
+            else // USBCAN (ControlCAN)
+            {
+                lblPort.Text = "设备型号:";
+                lblPort.Visible = true;
+                cboPort.Visible = true;
+                cboPort.Width = 115;
+                btnRefresh.Visible = false;
+
+                cboPort.Items.Clear();
+                cboPort.Items.AddRange(new object[] { "USBCAN2 (CANalyst-II)", "USBCAN1", "USBCAN-2E-U" });
+                cboPort.SelectedIndex = 0;
+
+                lblCanChannel.Visible = true;
+                cboCanChannel.Visible = true;
+
+                lblBaud.Text = "CAN速率:";
+                lblBaud.Visible = true;
+                cboBaud.Visible = true;
+                cboBaud.Width = 75;
+
+                cboBaud.Items.Clear();
+                cboBaud.Items.AddRange(new object[] { "500k", "250k", "125k", "1000k" });
+                cboBaud.SelectedIndex = 0; // 默认 500k 符合协议
+            }
+        }
+
         private void RefreshPorts()
         {
+            if (IsCanMode && cboCanDriver != null && cboCanDriver.SelectedIndex == 1)
+            {
+                return; // ControlCAN 下保持设备列表
+            }
+
             cboPort.Items.Clear();
             string[] ports = SerialPort.GetPortNames();
             if (ports.Length > 0)
@@ -2118,78 +2291,172 @@ namespace BMS_Protocol_Simulator
 
         private void UpdateProtocolBadge()
         {
-            if (_comm == null || lblProtocolBadge == null) return;
-            string modeStr = _comm.CurrentWorkMode == WorkMode.MasterPoller ? "[主机轮询模式]" : "[从机模拟模式]";
-            lblProtocolBadge.Text = string.Format("协议: {0} {1}", _comm.ProtocolHandler.ProtocolName, modeStr);
+            if (lblProtocolBadge == null) return;
+
+            if (IsCanMode)
+            {
+                string modeStr = (_canComm != null && _canComm.CurrentWorkMode == WorkMode.MasterPoller) ? "[主机轮询模式]" : "[从机模拟广播]";
+                lblProtocolBadge.Text = string.Format("协议: 江苏汉储 CAN BUS V1.0.1 (500k LE) {0}", modeStr);
+            }
+            else
+            {
+                if (_comm == null) return;
+                string modeStr = _comm.CurrentWorkMode == WorkMode.MasterPoller ? "[主机轮询模式]" : "[从机模拟模式]";
+                lblProtocolBadge.Text = string.Format("协议: {0} {1}", _comm.ProtocolHandler.ProtocolName, modeStr);
+            }
         }
 
         private void UpdateWorkModeUI()
         {
             bool isMaster = (cboWorkMode.SelectedIndex == 1);
-            _comm.CurrentWorkMode = isMaster ? WorkMode.MasterPoller : WorkMode.SlaveSimulator;
-            _comm.TargetSlaveId = (byte)numSpecificId.Value;
-            _comm.SpecificId = (int)numSpecificId.Value;
 
-            if (isMaster)
+            if (IsCanMode)
             {
-                chkReplyAllIds.Visible = false;
-                if (lblSlaveHint != null) lblSlaveHint.Visible = false;
-                lblIdTag.Text = "目标从机ID:";
-                numSpecificId.Enabled = true;
-
-                btnScanPacks.Visible = true;
-                if (lblPollInterval != null) lblPollInterval.Visible = true;
-                cboPollInterval.Visible = true;
-                btnPollPause.Visible = true;
-
-                if (pnlCombo != null) pnlCombo.Visible = false;
-                if (chkAutoAdapt != null) chkAutoAdapt.Visible = false;
-                if (pnlBannerContainer != null) pnlBannerContainer.Visible = false;
-                if (lblHint != null)
+                if (_canComm != null)
                 {
-                    lblHint.Text = "实时监控模式：接收外部电池遥测数据 (只读回显)";
-                    lblHint.ForeColor = Color.DimGray;
+                    _canComm.CurrentWorkMode = isMaster ? WorkMode.MasterPoller : WorkMode.SlaveSimulator;
                 }
 
-                if (_comm != null && _comm.IsOpen)
+                chkReplyAllIds.Visible = false;
+                lblIdTag.Visible = false;
+                numSpecificId.Visible = false;
+                btnScanPacks.Visible = false;
+
+                if (isMaster)
                 {
-                    lblStatusText.Text = string.Format("⚡ 主机轮询模式：正在采集目标从机 ID:{0} 遥测数据", _comm.TargetSlaveId);
+                    if (lblSlaveHint != null)
+                    {
+                        lblSlaveHint.Text = "ℹ 模式说明: 模拟逆变器发送 0x305 握手帧，并监听解析 BMS 广播报文实时遥测";
+                        lblSlaveHint.Visible = true;
+                    }
+                    if (lblPollInterval != null) lblPollInterval.Visible = true;
+                    cboPollInterval.Visible = true;
+                    btnPollPause.Visible = true;
+
+                    if (pnlCombo != null) pnlCombo.Visible = false;
+                    if (chkAutoAdapt != null) chkAutoAdapt.Visible = false;
+                    if (pnlBannerContainer != null) pnlBannerContainer.Visible = false;
+                    if (lblHint != null)
+                    {
+                        lblHint.Text = "实时监控模式：接收外部电池遥测数据 (只读回显)";
+                        lblHint.ForeColor = Color.DimGray;
+                    }
+
+                    if (_canComm != null && _canComm.IsOpen)
+                    {
+                        lblStatusText.Text = "⚡ CAN 主机模式：正在发送 0x305 握手并采集外部 BMS 广播遥测";
+                    }
+                    else
+                    {
+                        lblStatusText.Text = "⚡ 已进入 [主机轮询模式] (模拟逆变器发送 0x305 握手并采集报文)";
+                    }
                 }
                 else
                 {
-                    lblStatusText.Text = "⚡ 已进入 [主机轮询模式] (主动向从机电池下发轮询读取指令)";
+                    if (lblSlaveHint != null)
+                    {
+                        lblSlaveHint.Text = "ℹ 模式说明: 作为BMS从机以1s周期自动广播 0x351/355/356/359/35C/35E，并监听0x305握手";
+                        lblSlaveHint.Visible = true;
+                    }
+                    if (lblPollInterval != null) lblPollInterval.Visible = false;
+                    cboPollInterval.Visible = false;
+                    btnPollPause.Visible = false;
+
+                    if (pnlCombo != null) pnlCombo.Visible = true;
+                    if (chkAutoAdapt != null) chkAutoAdapt.Visible = false;
+                    if (pnlBannerContainer != null) pnlBannerContainer.Visible = false;
+                    if (lblHint != null)
+                    {
+                        lblHint.Text = "💡修改数值后按 [Enter] 或 [Ctrl+S] 提交生效。";
+                        lblHint.ForeColor = Color.DimGray;
+                    }
+
+                    if (_canComm != null && _canComm.IsOpen)
+                    {
+                        lblStatusText.Text = "✓ CAN 从机模式：正在以 1s 周期广播遥测数据...";
+                    }
+                    else
+                    {
+                        lblStatusText.Text = "✓ 已进入 [从机模拟模式] (作为BMS电池包以 1s 周期广播报文)";
+                    }
                 }
             }
             else
             {
-                chkReplyAllIds.Visible = true;
-                if (lblSlaveHint != null) lblSlaveHint.Visible = true;
-                lblIdTag.Text = "响应从机ID:";
-                numSpecificId.Enabled = !chkReplyAllIds.Checked;
+                _comm.CurrentWorkMode = isMaster ? WorkMode.MasterPoller : WorkMode.SlaveSimulator;
+                _comm.TargetSlaveId = (byte)numSpecificId.Value;
+                _comm.SpecificId = (int)numSpecificId.Value;
 
-                btnScanPacks.Visible = false;
-                if (lblPollInterval != null) lblPollInterval.Visible = false;
-                cboPollInterval.Visible = false;
-                btnPollPause.Visible = false;
-
-                if (pnlCombo != null) pnlCombo.Visible = true;
-                if (chkAutoAdapt != null) chkAutoAdapt.Visible = true;
-                if (pnlBannerContainer != null) pnlBannerContainer.Visible = true;
-                if (lblHint != null)
+                if (isMaster)
                 {
-                    lblHint.Text = "💡修改数值后按 [Enter] 或 [Ctrl+S] 提交生效。";
-                    lblHint.ForeColor = Color.DimGray;
-                }
+                    chkReplyAllIds.Visible = false;
+                    if (lblSlaveHint != null) lblSlaveHint.Visible = false;
+                    lblIdTag.Visible = true;
+                    lblIdTag.Text = "目标从机ID:";
+                    numSpecificId.Visible = true;
+                    numSpecificId.Enabled = true;
 
-                if (_comm != null && _comm.IsOpen)
-                {
-                    lblStatusText.Text = "✓ 从机模拟模式：正在监听总线，等待外部逆变器查询...";
+                    btnScanPacks.Visible = true;
+                    if (lblPollInterval != null) lblPollInterval.Visible = true;
+                    cboPollInterval.Visible = true;
+                    btnPollPause.Visible = true;
+
+                    if (pnlCombo != null) pnlCombo.Visible = false;
+                    if (chkAutoAdapt != null) chkAutoAdapt.Visible = false;
+                    if (pnlBannerContainer != null) pnlBannerContainer.Visible = false;
+                    if (lblHint != null)
+                    {
+                        lblHint.Text = "实时监控模式：接收外部电池遥测数据 (只读回显)";
+                        lblHint.ForeColor = Color.DimGray;
+                    }
+
+                    if (_comm != null && _comm.IsOpen)
+                    {
+                        lblStatusText.Text = string.Format("⚡ 主机轮询模式：正在采集目标从机 ID:{0} 遥测数据", _comm.TargetSlaveId);
+                    }
+                    else
+                    {
+                        lblStatusText.Text = "⚡ 已进入 [主机轮询模式] (主动向从机电池下发轮询读取指令)";
+                    }
                 }
                 else
                 {
-                    lblStatusText.Text = "✓ 已进入 [从机模拟模式] (作为BMS电池包响应逆变器)";
+                    chkReplyAllIds.Visible = true;
+                    if (lblSlaveHint != null)
+                    {
+                        lblSlaveHint.Text = "ℹ 模式说明: 作为BMS从机实时监听并响应逆变器轮询";
+                        lblSlaveHint.Visible = true;
+                    }
+                    lblIdTag.Visible = true;
+                    lblIdTag.Text = "响应从机ID:";
+                    numSpecificId.Visible = true;
+                    numSpecificId.Enabled = !chkReplyAllIds.Checked;
+
+                    btnScanPacks.Visible = false;
+                    if (lblPollInterval != null) lblPollInterval.Visible = false;
+                    cboPollInterval.Visible = false;
+                    btnPollPause.Visible = false;
+
+                    if (pnlCombo != null) pnlCombo.Visible = true;
+                    if (chkAutoAdapt != null) chkAutoAdapt.Visible = true;
+                    if (pnlBannerContainer != null) pnlBannerContainer.Visible = true;
+                    if (lblHint != null)
+                    {
+                        lblHint.Text = "💡修改数值后按 [Enter] 或 [Ctrl+S] 提交生效。";
+                        lblHint.ForeColor = Color.DimGray;
+                    }
+
+                    if (_comm != null && _comm.IsOpen)
+                    {
+                        lblStatusText.Text = "✓ 从机模拟模式：正在监听总线，等待外部逆变器查询...";
+                    }
+                    else
+                    {
+                        lblStatusText.Text = "✓ 已进入 [从机模拟模式] (作为BMS电池包响应逆变器)";
+                    }
                 }
             }
+
             UpdateProtocolBadge();
             UpdateModelMatchBanner();
         }
@@ -2246,8 +2513,16 @@ namespace BMS_Protocol_Simulator
                 FlashControlColor(chkProtSys, successGreen, 800);
                 FlashControlColor(chkProtSoftStart, successGreen, 800);
 
-                lblStatusText.Text = string.Format("✓ [主机遥测回显] 目标从机ID:{0} 遥测已更新 (时延: {1}ms | {2:HH:mm:ss})",
-                    _comm.TargetSlaveId, _comm.LastResponseTimeMs, DateTime.Now);
+                if (IsCanMode)
+                {
+                    lblStatusText.Text = string.Format("✓ [CAN 主机遥测回显] 遥测已更新 (时延: {0}ms | {1:HH:mm:ss})",
+                        _canComm.LastResponseTimeMs, DateTime.Now);
+                }
+                else
+                {
+                    lblStatusText.Text = string.Format("✓ [主机遥测回显] 目标从机ID:{0} 遥测已更新 (时延: {1}ms | {2:HH:mm:ss})",
+                        _comm.TargetSlaveId, _comm.LastResponseTimeMs, DateTime.Now);
+                }
             }));
         }
 
@@ -2281,6 +2556,12 @@ namespace BMS_Protocol_Simulator
 
         private void CboProtocol_SelectedIndexChanged(object sender, EventArgs e)
         {
+            if (IsCanMode)
+            {
+                UpdateProtocolBadge();
+                return;
+            }
+
             switch (cboProtocol.SelectedIndex)
             {
                 case 0:
@@ -2302,14 +2583,125 @@ namespace BMS_Protocol_Simulator
 
         private void BtnConnect_Click(object sender, EventArgs e)
         {
+            if (IsCanMode)
+            {
+                BtnConnectCan_Click();
+            }
+            else
+            {
+                BtnConnectSerial_Click();
+            }
+        }
+
+        private void BtnConnectCan_Click()
+        {
+            if (_canComm.IsOpen)
+            {
+                _canComm.Close();
+                btnConnect.Text = "打开CAN";
+                lblPortStatus.Text = "未连接";
+                lblPortStatus.ForeColor = Color.Gray;
+
+                cboInterface.Enabled = true;
+                cboCanDriver.Enabled = true;
+                cboPort.Enabled = true;
+                btnRefresh.Enabled = true;
+                cboBaud.Enabled = true;
+                cboProtocol.Enabled = true;
+                cboWorkMode.Enabled = true;
+                if (cboCanChannel != null) cboCanChannel.Enabled = true;
+
+                lblStatusText.Text = _canComm.CurrentWorkMode == WorkMode.MasterPoller ? "CAN通信已关闭，主机轮询已停止" : "CAN通信已关闭，从机广播已停止";
+                UpdateProtocolBadge();
+                return;
+            }
+
+            try
+            {
+                string canBaud = (cboBaud.SelectedItem != null) ? cboBaud.SelectedItem.ToString() : "500k";
+                ICanDriver driver = null;
+
+                if (cboCanDriver.SelectedIndex == 0) // SLCAN
+                {
+                    if (cboPort.SelectedItem == null || cboPort.SelectedItem.ToString().Contains("无") || cboPort.SelectedItem.ToString().Equals("None", StringComparison.OrdinalIgnoreCase))
+                    {
+                        MessageBox.Show("请先插入 CANable/SLCAN 适配器并选择有效虚拟串口！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+
+                    string portName = cboPort.SelectedItem.ToString();
+                    driver = new SlcanDriver(portName, canBaud);
+                }
+                else // ControlCAN
+                {
+                    string checkErr;
+                    if (!ControlCanDriver.CheckDllAvailability(out checkErr))
+                    {
+                        MessageBox.Show(checkErr, "ControlCAN 依赖检查", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+
+                    uint devType = ControlCanNative.VCI_USBCAN2;
+                    string devStr = (cboPort.SelectedItem != null) ? cboPort.SelectedItem.ToString() : "";
+                    if (devStr.Contains("USBCAN1")) devType = ControlCanNative.VCI_USBCAN1;
+                    else if (devStr.Contains("2E-U")) devType = ControlCanNative.VCI_USBCAN_2E_U;
+
+                    uint canIndex = (cboCanChannel != null && cboCanChannel.SelectedIndex == 1) ? 1u : 0u;
+                    driver = new ControlCanDriver(devType, 0, canIndex, canBaud);
+                }
+
+                _canComm.CurrentWorkMode = (cboWorkMode.SelectedIndex == 1) ? WorkMode.MasterPoller : WorkMode.SlaveSimulator;
+                _canComm.BroadcastIntervalMs = 1000;
+
+                if (_canComm.Open(driver))
+                {
+                    btnConnect.Text = "关闭CAN";
+                    lblPortStatus.Text = "● 运行中";
+                    lblPortStatus.ForeColor = Color.Green;
+
+                    cboInterface.Enabled = false;
+                    cboCanDriver.Enabled = false;
+                    cboPort.Enabled = false;
+                    btnRefresh.Enabled = false;
+                    cboBaud.Enabled = false;
+                    cboProtocol.Enabled = false;
+                    cboWorkMode.Enabled = false;
+                    if (cboCanChannel != null) cboCanChannel.Enabled = false;
+
+                    if (_canComm.CurrentWorkMode == WorkMode.MasterPoller)
+                    {
+                        lblStatusText.Text = string.Format("✓ CAN 已打开 [{0}: {1}]，主机模式运行中 (下发0x305握手，采集遥测)...", driver.DriverName, canBaud);
+                    }
+                    else
+                    {
+                        lblStatusText.Text = string.Format("✓ CAN 已打开 [{0}: {1}]，从机广播模式运行中 (1s周期广播0x351/355/356/359/35C/35E)...", driver.DriverName, canBaud);
+                    }
+
+                    UpdateProtocolBadge();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("打开 CAN 设备失败:\n" + ex.Message, "连接失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                lblPortStatus.Text = "错误";
+                lblPortStatus.ForeColor = Color.Red;
+            }
+        }
+
+        private void BtnConnectSerial_Click()
+        {
             if (_comm.IsOpen)
             {
                 _comm.Close();
                 btnConnect.Text = "打开串口";
                 lblPortStatus.Text = "未连接";
                 lblPortStatus.ForeColor = Color.Gray;
+                cboInterface.Enabled = true;
                 cboPort.Enabled = true;
+                btnRefresh.Enabled = true;
                 cboBaud.Enabled = true;
+                cboProtocol.Enabled = true;
+                cboWorkMode.Enabled = true;
                 lblStatusText.Text = _comm.CurrentWorkMode == WorkMode.MasterPoller ? "串口已关闭，主机轮询已停止" : "串口已关闭，从机模拟已停止";
             }
             else
@@ -2328,8 +2720,12 @@ namespace BMS_Protocol_Simulator
                     btnConnect.Text = "关闭串口";
                     lblPortStatus.Text = "● 运行中";
                     lblPortStatus.ForeColor = Color.Green;
+                    cboInterface.Enabled = false;
                     cboPort.Enabled = false;
+                    btnRefresh.Enabled = false;
                     cboBaud.Enabled = false;
+                    cboProtocol.Enabled = false;
+                    cboWorkMode.Enabled = false;
 
                     if (_comm.CurrentWorkMode == WorkMode.MasterPoller)
                     {
@@ -2354,6 +2750,12 @@ namespace BMS_Protocol_Simulator
             }
 
             if (lblBannerText == null || lblBannerIcon == null || btnQuickFix == null) return;
+
+            if (IsCanMode)
+            {
+                if (pnlBannerContainer != null) pnlBannerContainer.Visible = false;
+                return;
+            }
 
             if (_comm == null || !_comm.IsOpen)
             {
@@ -2734,9 +3136,18 @@ namespace BMS_Protocol_Simulator
 
         private void UpdateStatsLabels()
         {
-            lblRxCount.Text = string.Format("RX: {0}", _comm.RxCount);
-            lblTxCount.Text = string.Format("TX: {0}", _comm.TxCount);
-            lblErrCount.Text = string.Format("错误: {0}", _comm.ErrorCount);
+            if (IsCanMode)
+            {
+                lblRxCount.Text = string.Format("RX: {0}", _canComm != null ? _canComm.RxCount : 0);
+                lblTxCount.Text = string.Format("TX: {0}", _canComm != null ? _canComm.TxCount : 0);
+                lblErrCount.Text = string.Format("错误: {0}", _canComm != null ? _canComm.ErrorCount : 0);
+            }
+            else
+            {
+                lblRxCount.Text = string.Format("RX: {0}", _comm.RxCount);
+                lblTxCount.Text = string.Format("TX: {0}", _comm.TxCount);
+                lblErrCount.Text = string.Format("错误: {0}", _comm.ErrorCount);
+            }
         }
 
         private void Comm_OnStatusChanged(object sender, string msg)
@@ -2796,7 +3207,8 @@ namespace BMS_Protocol_Simulator
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            _comm.Close();
+            if (_comm != null) _comm.Close();
+            if (_canComm != null) _canComm.Close();
             base.OnFormClosing(e);
         }
     }
