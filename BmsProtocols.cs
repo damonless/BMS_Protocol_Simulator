@@ -1624,13 +1624,31 @@ namespace BMS_Protocol_Simulator
 
         public int MasterPollPhaseCount
         {
-            get { return 3; }
+            get { return 6; }
         }
 
         public byte[] BuildMasterPollFrame(byte targetId, int pollPhase)
         {
-            // 主机轮询: Phase 0: 61H (系统模拟量), Phase 1: 62H (系统告警), Phase 2: 63H (充放电控制)
-            string cid2 = pollPhase == 0 ? "61" : (pollPhase == 1 ? "62" : "63");
+            // 主机轮询 (6阶段全量遥测与控制配置轮询):
+            // Phase 0: 61H (系统运行模拟量: 总压, 电流, SOC, SOH, 温度, 循环次数)
+            // Phase 1: 62H (系统告警与保护状态字)
+            // Phase 2: 63H (系统充放电管理参数: CV, 截止, 充放限流, 使能字)
+            // Phase 3: 42H (单包模拟量与电芯探头)
+            // Phase 4: 44H (单包告警与保护状态)
+            // Phase 5: 92H (单包充放电管理)
+            string cid2;
+            switch (pollPhase % 6)
+            {
+                case 0: cid2 = "61"; break;
+                case 1: cid2 = "62"; break;
+                case 2: cid2 = "63"; break;
+                case 3: cid2 = "42"; break;
+                case 4: cid2 = "44"; break;
+                case 5: cid2 = "92"; break;
+                default: cid2 = "61"; break;
+            }
+
+            // INFO 参数传入 targetId (例如 01 或 02)
             string cmd = string.Format("~20{0:X2}46{1}E002{0:X2}", targetId, cid2);
             byte[] cmdBytes = Encoding.ASCII.GetBytes(cmd);
             ushort chk = PylonChecksum.Calculate(cmdBytes, 1, cmdBytes.Length - 1);
@@ -1671,7 +1689,7 @@ namespace BMS_Protocol_Simulator
             string rtn = asciiStr.Substring(7, 2);
             if (rtn != "00")
             {
-                decodedInfo = string.Format("[PYLON] 从机返回错误码 RTN={0}", rtn);
+                decodedInfo = string.Format("[PYLON] 从机返回提示码 RTN={0}", rtn);
                 return false;
             }
 
@@ -1683,13 +1701,132 @@ namespace BMS_Protocol_Simulator
 
             lock (model.SyncRoot)
             {
-                // 1. 61H 响应 (长度 98: 26项系统模拟量)
+                // 1. 优先解析 42H (模拟量) / 44H (告警与保护) 单包报文 (支持 0002 或 02 等前缀)
+                int cellOffset = info.StartsWith("00") ? 4 : 2;
+                int cellCount = 0;
+                if (info.Length >= cellOffset + 2 && int.TryParse(info.Substring(cellOffset, 2), System.Globalization.NumberStyles.HexNumber, null, out cellCount) && cellCount > 0 && cellCount <= 32)
+                {
+                    // 检查是否为 42H 模拟量 (每个电芯电压 4 字符, 温度 4 字符, 电流/电压/容量/循环 20 字符以上)
+                    int tempOffset42 = cellOffset + 2 + cellCount * 4;
+                    if (info.Length >= tempOffset42 + 2)
+                    {
+                        int tempCount42 = 0;
+                        int.TryParse(info.Substring(tempOffset42, 2), System.Globalization.NumberStyles.HexNumber, null, out tempCount42);
+                        int currOffset42 = tempOffset42 + 2 + tempCount42 * 4;
+
+                        if (tempCount42 <= 16 && info.Length >= currOffset42 + 20)
+                        {
+                            // 提取温度均值
+                            if (tempCount42 > 0)
+                            {
+                                int tempSum = 0;
+                                int validTempCount = 0;
+                                for (int t = 0; t < tempCount42; t++)
+                                {
+                                    ushort tK;
+                                    if (ushort.TryParse(info.Substring(tempOffset42 + 2 + t * 4, 4), System.Globalization.NumberStyles.HexNumber, null, out tK) && tK > 2000 && tK < 4000)
+                                    {
+                                        tempSum += (tK - 2731);
+                                        validTempCount++;
+                                    }
+                                }
+                                if (validTempCount > 0)
+                                    model.Temperature = Math.Min(150.0, Math.Max(-50.0, (tempSum / (double)validTempCount) / 10.0));
+                            }
+
+                            short sCurr;
+                            ushort uVolt;
+                            if (short.TryParse(info.Substring(currOffset42, 4), System.Globalization.NumberStyles.HexNumber, null, out sCurr))
+                                model.Current = sCurr / 10.0; // 42H 电流精度为 0.1A
+
+                            if (ushort.TryParse(info.Substring(currOffset42 + 4, 4), System.Globalization.NumberStyles.HexNumber, null, out uVolt))
+                                model.Voltage = uVolt / 1000.0; // mV -> V
+
+                            if (info.Length >= currOffset42 + 12)
+                            {
+                                ushort uRemCap;
+                                if (ushort.TryParse(info.Substring(currOffset42 + 8, 4), System.Globalization.NumberStyles.HexNumber, null, out uRemCap) && uRemCap != 0xFFFF)
+                                    model.RemainingCapacity = uRemCap / 100.0; // 10mAh -> Ah
+                            }
+
+                            if (info.Length >= currOffset42 + 18)
+                            {
+                                ushort uFullCap;
+                                if (ushort.TryParse(info.Substring(currOffset42 + 14, 4), System.Globalization.NumberStyles.HexNumber, null, out uFullCap) && uFullCap != 0xFFFF)
+                                    model.FullCapacity = uFullCap / 100.0; // 10mAh -> Ah
+                            }
+
+                            if (info.Length >= currOffset42 + 22)
+                            {
+                                ushort uCycles;
+                                if (ushort.TryParse(info.Substring(currOffset42 + 18, 4), System.Globalization.NumberStyles.HexNumber, null, out uCycles))
+                                    model.CycleCount = uCycles;
+                            }
+
+                            // 计算并校准 SOC
+                            if (model.FullCapacity > 0 && model.RemainingCapacity > 0)
+                            {
+                                model.SOC = Math.Round(Math.Min(100.0, Math.Max(0.0, (model.RemainingCapacity / model.FullCapacity) * 100.0)), 1);
+                            }
+                            else
+                            {
+                                model.SOC = Math.Min(100.0, Math.Max(0.0, model.SOC));
+                            }
+
+                            decodedInfo = string.Format("[PYLON] 解析 42H 单包遥测成功: 电压={0:F2}V, 电流={1:F1}A, SOC={2:F0}%, 容量={3:F1}/{4:F1}Ah, 循环={5}次, 温度={6:F1}°C ({7}串)",
+                                model.Voltage, model.Current, model.SOC, model.RemainingCapacity, model.FullCapacity, model.CycleCount, model.Temperature, cellCount);
+                            return true;
+                        }
+                    }
+
+                    // 检查是否为 44H 告警与保护 (每个电芯告警 2 字符, 温度告警 2 字符, 状态字 4 字符以上)
+                    int tempOffset44 = cellOffset + 2 + cellCount * 2;
+                    if (info.Length >= tempOffset44 + 2)
+                    {
+                        int tempCount44 = 0;
+                        int.TryParse(info.Substring(tempOffset44, 2), System.Globalization.NumberStyles.HexNumber, null, out tempCount44);
+                        int statusOffset44 = tempOffset44 + 2 + tempCount44 * 2;
+
+                        if (tempCount44 <= 16 && info.Length >= statusOffset44 + 4)
+                        {
+                            byte currWarn = 0, voltWarn = 0, prot1 = 0;
+                            byte.TryParse(info.Substring(statusOffset44, 2), System.Globalization.NumberStyles.HexNumber, null, out currWarn);
+                            byte.TryParse(info.Substring(statusOffset44 + 2, 2), System.Globalization.NumberStyles.HexNumber, null, out voltWarn);
+                            if (info.Length >= statusOffset44 + 6)
+                                byte.TryParse(info.Substring(statusOffset44 + 4, 2), System.Globalization.NumberStyles.HexNumber, null, out prot1);
+
+                            model.WarnOverCurrent = (currWarn != 0);
+                            model.WarnGlobalOverVolt = (voltWarn & 0x02) != 0;
+                            model.WarnGlobalUnderVolt = (voltWarn & 0x01) != 0;
+
+                            model.ProtOverVolt = (prot1 & 0x80) != 0;
+                            model.ProtUnderVolt = (prot1 & 0x40) != 0;
+                            model.ProtOverCurrent = (prot1 & 0x20) != 0;
+                            model.ProtHighTemp = (prot1 & 0x08) != 0;
+                            model.ProtUnderTemp = (prot1 & 0x04) != 0;
+
+                            decodedInfo = string.Format("[PYLON] 解析 44H 单包状态字: 告警(I:{0:X2},V:{1:X2}) 保护(0x{2:X2})",
+                                currWarn, voltWarn, prot1);
+                            return true;
+                        }
+                    }
+                }
+
+                // 2. 60H 系统设备信息响应 (ASCII 字符串)
+                if (infoLen == 98 && (info.StartsWith("4C31") || info.Contains("4A4244")))
+                {
+                    decodedInfo = "[PYLON] 60H 系统设备信息: JBD-UP16S023-300A";
+                    return true;
+                }
+
+                // 3. 61H 系统模拟量响应 (长度 98: 26项系统模拟量)
                 if (infoLen == 98)
                 {
                     ushort uVoltMv;
                     short sCurr10Ma;
                     byte uSoc;
-                    ushort uRemCap10Mah, uFullCap10Mah, uCycles, uSoh;
+                    ushort uCycles;
+                    byte uSoh;
                     ushort uTempK;
 
                     if (ushort.TryParse(info.Substring(0, 4), System.Globalization.NumberStyles.HexNumber, null, out uVoltMv))
@@ -1699,29 +1836,24 @@ namespace BMS_Protocol_Simulator
                         model.Current = sCurr10Ma / 100.0;
 
                     if (byte.TryParse(info.Substring(8, 2), System.Globalization.NumberStyles.HexNumber, null, out uSoc))
-                        model.SOC = uSoc;
+                        model.SOC = Math.Min(100.0, Math.Max(0.0, (double)uSoc));
 
-                    if (ushort.TryParse(info.Substring(10, 4), System.Globalization.NumberStyles.HexNumber, null, out uRemCap10Mah))
-                        model.RemainingCapacity = uRemCap10Mah / 100.0;
-
-                    if (ushort.TryParse(info.Substring(14, 4), System.Globalization.NumberStyles.HexNumber, null, out uFullCap10Mah))
-                        model.FullCapacity = uFullCap10Mah / 100.0;
-
-                    if (ushort.TryParse(info.Substring(18, 4), System.Globalization.NumberStyles.HexNumber, null, out uCycles))
+                    if (ushort.TryParse(info.Substring(10, 4), System.Globalization.NumberStyles.HexNumber, null, out uCycles))
                         model.CycleCount = uCycles;
 
-                    if (ushort.TryParse(info.Substring(22, 4), System.Globalization.NumberStyles.HexNumber, null, out uSoh))
+                    if (byte.TryParse(info.Substring(18, 2), System.Globalization.NumberStyles.HexNumber, null, out uSoh))
                         if (uSoh > 0 && uSoh <= 100) model.SOH = uSoh;
 
-                    if (ushort.TryParse(info.Substring(26, 4), System.Globalization.NumberStyles.HexNumber, null, out uTempK))
-                        model.Temperature = (uTempK - 2731) / 10.0;
+                    if (info.Length >= 42 && ushort.TryParse(info.Substring(38, 4), System.Globalization.NumberStyles.HexNumber, null, out uTempK))
+                        model.Temperature = Math.Min(150.0, Math.Max(-50.0, (uTempK - 2731) / 10.0));
 
-                    decodedInfo = string.Format("[PYLON] 解析 61H 成功: 电压={0:F2}V, 电流={1:F2}A, SOC={2:F0}%, 容量={3:F1}/{4:F1}Ah, 温度={5:F1}°C",
-                        model.Voltage, model.Current, model.SOC, model.RemainingCapacity, model.FullCapacity, model.Temperature);
+                    decodedInfo = string.Format("[PYLON] 解析 61H 系统遥测成功: 电压={0:F2}V, 电流={1:F2}A, SOC={2:F0}%, SOH={3:F0}%, 循环={4}次, 温度={5:F1}°C",
+                        model.Voltage, model.Current, model.SOC, model.SOH, model.CycleCount, model.Temperature);
                     return true;
                 }
-                // 2. 62H 响应 (系统告警与保护状态字)
-                else if (infoLen == 8)
+
+                // 4. 62H 系统告警与保护状态字
+                if (infoLen == 8)
                 {
                     byte warn1, warn2, prot1, prot2;
                     if (byte.TryParse(info.Substring(0, 2), System.Globalization.NumberStyles.HexNumber, null, out warn1) &&
@@ -1745,30 +1877,33 @@ namespace BMS_Protocol_Simulator
                         model.ProtOverCurrent = (prot2 & 0x60) != 0;
                         model.ProtSystemFault = (prot2 & 0x08) != 0;
 
-                        decodedInfo = string.Format("[PYLON] 解析 62H 状态字: 告警(0x{0:X2},0x{1:X2}) 保护(0x{2:X2},0x{3:X2})",
+                        decodedInfo = string.Format("[PYLON] 解析 62H 系统状态字: 告警(0x{0:X2},0x{1:X2}) 保护(0x{2:X2},0x{3:X2})",
                             warn1, warn2, prot1, prot2);
                         return true;
                     }
                 }
-                // 3. 63H 响应 (充放电控制管理)
-                else if (infoLen == 18)
+
+                // 5. 63H / 92H 充放电控制管理参数 (18 或 20 字符)
+                if (infoLen == 18 || infoLen == 20)
                 {
-                    ushort uCvMv, uCutoffMv, uChg10Ma, uDis10Ma;
+                    int offset = (infoLen == 20 || info.Length >= 20) ? 2 : 0;
+                    ushort uCvMv, uCutoffMv;
+                    short sChg10Ma, sDis10Ma;
                     byte statusByte;
 
-                    if (ushort.TryParse(info.Substring(0, 4), System.Globalization.NumberStyles.HexNumber, null, out uCvMv))
+                    if (ushort.TryParse(info.Substring(offset + 0, 4), System.Globalization.NumberStyles.HexNumber, null, out uCvMv) && uCvMv > 0)
                         model.CVVoltage = uCvMv / 1000.0;
 
-                    if (ushort.TryParse(info.Substring(4, 4), System.Globalization.NumberStyles.HexNumber, null, out uCutoffMv))
+                    if (ushort.TryParse(info.Substring(offset + 4, 4), System.Globalization.NumberStyles.HexNumber, null, out uCutoffMv) && uCutoffMv > 0)
                         model.CutoffVoltage = uCutoffMv / 1000.0;
 
-                    if (ushort.TryParse(info.Substring(8, 4), System.Globalization.NumberStyles.HexNumber, null, out uChg10Ma))
-                        model.MaxChargeCurrent = uChg10Ma / 100.0;
+                    if (short.TryParse(info.Substring(offset + 8, 4), System.Globalization.NumberStyles.HexNumber, null, out sChg10Ma))
+                        model.MaxChargeCurrent = Math.Abs((double)sChg10Ma) / 100.0;
 
-                    if (ushort.TryParse(info.Substring(12, 4), System.Globalization.NumberStyles.HexNumber, null, out uDis10Ma))
-                        model.MaxDischargeCurrent = uDis10Ma / 100.0;
+                    if (short.TryParse(info.Substring(offset + 12, 4), System.Globalization.NumberStyles.HexNumber, null, out sDis10Ma))
+                        model.MaxDischargeCurrent = Math.Abs((double)sDis10Ma) / 100.0;
 
-                    if (byte.TryParse(info.Substring(16, 2), System.Globalization.NumberStyles.HexNumber, null, out statusByte))
+                    if (byte.TryParse(info.Substring(offset + 16, 2), System.Globalization.NumberStyles.HexNumber, null, out statusByte))
                     {
                         model.StatusChargeEnable = (statusByte & 0x80) != 0;
                         model.StatusDischargeEnable = (statusByte & 0x40) != 0;
@@ -1776,39 +1911,9 @@ namespace BMS_Protocol_Simulator
                         model.StatusFullCharge = (statusByte & 0x10) != 0;
                     }
 
-                    decodedInfo = string.Format("[PYLON] 解析 63H 成功: CV={0:F2}V, 截止={1:F2}V, 最大充电限流={2:F1}A, 最大放电限流={3:F1}A",
-                        model.CVVoltage, model.CutoffVoltage, model.MaxChargeCurrent, model.MaxDischargeCurrent);
+                    decodedInfo = string.Format("[PYLON] 解析 63H/92H 充放控制成功: CV={0:F2}V, 截止={1:F2}V, 充限={2:F1}A, 放限={3:F1}A, 使能=0x{4:X2}",
+                        model.CVVoltage, model.CutoffVoltage, model.MaxChargeCurrent, model.MaxDischargeCurrent, statusByte);
                     return true;
-                }
-                // 4. 42H 响应 (单包模拟量)
-                else if (infoLen >= 30 && info.StartsWith("01"))
-                {
-                    int cellCount;
-                    if (int.TryParse(info.Substring(2, 2), System.Globalization.NumberStyles.HexNumber, null, out cellCount))
-                    {
-                        int tempOffset = 4 + cellCount * 4;
-                        if (info.Length >= tempOffset + 2)
-                        {
-                            int tempCount;
-                            if (int.TryParse(info.Substring(tempOffset, 2), System.Globalization.NumberStyles.HexNumber, null, out tempCount))
-                            {
-                                int currOffset = tempOffset + 2 + tempCount * 4;
-                                if (info.Length >= currOffset + 12)
-                                {
-                                    short sCurr;
-                                    ushort uVolt;
-                                    if (short.TryParse(info.Substring(currOffset, 4), System.Globalization.NumberStyles.HexNumber, null, out sCurr))
-                                        model.Current = sCurr / 10.0;
-
-                                    if (ushort.TryParse(info.Substring(currOffset + 4, 4), System.Globalization.NumberStyles.HexNumber, null, out uVolt))
-                                        model.Voltage = uVolt / 1000.0;
-
-                                    decodedInfo = string.Format("[PYLON] 解析 42H 成功: 电压={0:F2}V, 电流={1:F1}A", model.Voltage, model.Current);
-                                    return true;
-                                }
-                            }
-                        }
-                    }
                 }
             }
 

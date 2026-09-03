@@ -45,6 +45,22 @@ namespace BMS_Protocol_Simulator
         }
     }
 
+    public class ScanProgressEventArgs : EventArgs
+    {
+        public int CurrentStep { get; private set; }
+        public int TotalSteps { get; private set; }
+        public byte CurrentId { get; private set; }
+        public List<byte> FoundPacks { get; private set; }
+
+        public ScanProgressEventArgs(int currentStep, int totalSteps, byte currentId, List<byte> foundPacks)
+        {
+            CurrentStep = currentStep;
+            TotalSteps = totalSteps;
+            CurrentId = currentId;
+            FoundPacks = foundPacks;
+        }
+    }
+
     public class SerialCommManager
     {
         private SerialPort _port;
@@ -56,6 +72,8 @@ namespace BMS_Protocol_Simulator
 
         private volatile bool _singlePollRequested = false;
         private volatile bool _scanRequested = false;
+        private volatile bool _cancelScanRequested = false;
+        public bool WasScanCancelled { get; private set; }
 
         public BmsDataModel Model { get; private set; }
         public IBmsProtocolHandler ProtocolHandler { get; set; }
@@ -83,6 +101,7 @@ namespace BMS_Protocol_Simulator
         public event EventHandler<string> OnStatusChanged;
         public event EventHandler<BmsDataModel> OnMasterTelemetryUpdated;
         public event EventHandler<List<byte>> OnScanPacksCompleted;
+        public event EventHandler<ScanProgressEventArgs> OnScanProgress;
         public event EventHandler<DetectionEventArgs> OnInverterDetected;
         public event EventHandler<AutoAdaptEventArgs> OnAutoAdapted;
 
@@ -184,7 +203,16 @@ namespace BMS_Protocol_Simulator
         // ── 主机模式：开始扫描在线电池包 ──
         public void StartScanOnlinePacks()
         {
+            WasScanCancelled = false;
+            _cancelScanRequested = false;
             _scanRequested = true;
+        }
+
+        // ── 主机模式：取消在线电池包扫描 ──
+        public void CancelScan()
+        {
+            _cancelScanRequested = true;
+            WasScanCancelled = true;
         }
 
         // ── 主机模式：发送控制指令 ──
@@ -391,12 +419,28 @@ namespace BMS_Protocol_Simulator
                         if (_scanRequested)
                         {
                             _scanRequested = false;
-                            if (OnStatusChanged != null) OnStatusChanged(this, "正在扫描总线在线电池包 (ID 0 ~ 15)...");
+                            _cancelScanRequested = false;
+                            WasScanCancelled = false;
+                            if (OnStatusChanged != null) OnStatusChanged(this, "正在扫描总线在线电池包 (ID 1 ~ 15, 0)...");
                             List<byte> foundPacks = new List<byte>();
 
-                            for (byte scanId = 0; scanId <= 15; scanId++)
+                            // 优先扫描常见地址 1 ~ 15，最后扫描 0
+                            byte[] scanList = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0 };
+                            int totalSteps = scanList.Length;
+                            for (int i = 0; i < totalSteps; i++)
                             {
-                                if (!_isRunning || CurrentWorkMode != WorkMode.MasterPoller) break;
+                                if (_cancelScanRequested || !_isRunning || CurrentWorkMode != WorkMode.MasterPoller)
+                                {
+                                    WasScanCancelled = true;
+                                    break;
+                                }
+
+                                byte scanId = scanList[i];
+                                if (OnScanProgress != null)
+                                {
+                                    OnScanProgress(this, new ScanProgressEventArgs(i, totalSteps, scanId, new List<byte>(foundPacks)));
+                                }
+
                                 byte[] probe = ProtocolHandler.BuildMasterPollFrame(scanId, 0);
                                 lock (_portLock)
                                 {
@@ -408,13 +452,19 @@ namespace BMS_Protocol_Simulator
                                 }
                                 TxCount++;
 
-                                // 等待从机响应 (80ms)
+                                // 等待从机响应 (280ms 充分满足 9600 波特率长报文传输时延)
                                 Stopwatch swProbe = Stopwatch.StartNew();
-                                byte[] probeBuf = new byte[256];
+                                byte[] probeBuf = new byte[512];
                                 int probeLen = 0;
 
-                                while (swProbe.ElapsedMilliseconds < 80)
+                                while (swProbe.ElapsedMilliseconds < 280)
                                 {
+                                    if (_cancelScanRequested || !_isRunning || CurrentWorkMode != WorkMode.MasterPoller)
+                                    {
+                                        WasScanCancelled = true;
+                                        break;
+                                    }
+
                                     int bRead = 0;
                                     lock (_portLock) { if (_port != null && _port.IsOpen) bRead = _port.BytesToRead; }
                                     if (bRead > 0)
@@ -424,21 +474,42 @@ namespace BMS_Protocol_Simulator
                                             if (_port != null && _port.IsOpen)
                                                 probeLen += _port.Read(probeBuf, probeLen, Math.Min(bRead, probeBuf.Length - probeLen));
                                         }
-                                        string dummy;
-                                        if (ProtocolHandler.TryDecodeMasterResponse(probeBuf, probeLen, Model, out dummy))
+
+                                        if (probeLen >= 10)
                                         {
-                                            foundPacks.Add(scanId);
-                                            RxCount++;
-                                            break;
+                                            if (ProtocolHandler is PylontechAsciiHandler)
+                                            {
+                                                if (probeBuf[0] == '~' && (probeBuf[probeLen - 1] == 0x0D || probeLen >= 30))
+                                                {
+                                                    foundPacks.Add(scanId);
+                                                    RxCount++;
+                                                    break;
+                                                }
+                                            }
+                                            else
+                                            {
+                                                string dummy;
+                                                if (ProtocolHandler.TryDecodeMasterResponse(probeBuf, probeLen, Model, out dummy))
+                                                {
+                                                    foundPacks.Add(scanId);
+                                                    RxCount++;
+                                                    break;
+                                                }
+                                            }
                                         }
                                     }
                                     Thread.Sleep(5);
+                                }
+
+                                if (OnScanProgress != null)
+                                {
+                                    OnScanProgress(this, new ScanProgressEventArgs(i + 1, totalSteps, scanId, new List<byte>(foundPacks)));
                                 }
                             }
 
                             string scanSummary = foundPacks.Count > 0
                                 ? string.Format("✓ 扫描完成，发现 {0} 个在线电池包: ID {1}", foundPacks.Count, string.Join(", ", foundPacks.ConvertAll<string>(delegate(byte b) { return b.ToString(); }).ToArray()))
-                                : "⚠️ 扫描完成，未探测到在线电池包";
+                                : (WasScanCancelled ? "扫描已由用户手动取消" : "⚠️ 扫描完成，未探测到在线电池包");
                             if (OnStatusChanged != null) OnStatusChanged(this, scanSummary);
                             if (OnScanPacksCompleted != null) OnScanPacksCompleted(this, foundPacks);
                             swPoll.Restart();
@@ -522,11 +593,31 @@ namespace BMS_Protocol_Simulator
                             bool ready = false;
                             if (ProtocolHandler is PylontechAsciiHandler)
                             {
-                                if (rxBuf[rxLen - 1] == 0x0D || swIdle.ElapsedMilliseconds >= 25) ready = true;
+                                // 消除 RS485 杂散前导噪声：确保以 ~ (0x7E) 开头
+                                int tildeIdx = -1;
+                                for (int i = 0; i < rxLen; i++)
+                                {
+                                    if (rxBuf[i] == (byte)'~') { tildeIdx = i; break; }
+                                }
+                                if (tildeIdx > 0)
+                                {
+                                    Array.Copy(rxBuf, tildeIdx, rxBuf, 0, rxLen - tildeIdx);
+                                    rxLen -= tildeIdx;
+                                }
+
+                                // 完整报文必须以 \r (0x0D) 结尾，或静默等待 120ms 防分包截断
+                                if (rxLen >= 10 && rxBuf[rxLen - 1] == 0x0D)
+                                {
+                                    ready = true;
+                                }
+                                else if (swIdle.ElapsedMilliseconds >= 120 && rxLen >= 10)
+                                {
+                                    ready = true;
+                                }
                             }
                             else
                             {
-                                if (swIdle.ElapsedMilliseconds >= 20 || (rxLen >= 5 && ModbusCrc.Check(rxBuf, rxLen))) ready = true;
+                                if (swIdle.ElapsedMilliseconds >= 25 || (rxLen >= 5 && ModbusCrc.Check(rxBuf, rxLen))) ready = true;
                             }
 
                             if (ready)
@@ -549,7 +640,7 @@ namespace BMS_Protocol_Simulator
                                 else
                                 {
                                     ErrorCount++;
-                                    if (OnLogEvent != null) OnLogEvent(this, new LogEventArgs(false, currentFrame, "[从机校验失败或未知响应]"));
+                                    if (OnLogEvent != null) OnLogEvent(this, new LogEventArgs(false, currentFrame, string.IsNullOrEmpty(decoded) ? "[从机校验失败或未知响应]" : decoded));
                                 }
                             }
                         }
