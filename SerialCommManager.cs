@@ -238,7 +238,7 @@ namespace BMS_Protocol_Simulator
         {
             byte[] rxBuf = new byte[1024];
             int rxLen = 0;
-            Stopwatch swIdle = new Stopwatch();
+            Stopwatch swIdle = Stopwatch.StartNew();
             Stopwatch swPoll = Stopwatch.StartNew();
             Stopwatch swLastMasterRx = Stopwatch.StartNew();
             int pollPhase = 0;
@@ -261,151 +261,178 @@ namespace BMS_Protocol_Simulator
 
                         if (bytesToRead > 0)
                         {
-                            int read = 0;
-                            lock (_portLock)
+                            int spaceLeft = rxBuf.Length - rxLen;
+                            if (spaceLeft > 0)
                             {
-                                if (_port != null && _port.IsOpen)
-                                    read = _port.Read(rxBuf, rxLen, Math.Min(bytesToRead, rxBuf.Length - rxLen));
-                            }
-                            if (read > 0)
-                            {
-                                rxLen += read;
-                                while (rxLen > 0)
+                                int read = 0;
+                                lock (_portLock)
                                 {
-                                    byte[] currentFrame = null;
+                                    if (_port != null && _port.IsOpen)
+                                        read = _port.Read(rxBuf, rxLen, Math.Min(bytesToRead, spaceLeft));
+                                }
+                                if (read > 0)
+                                {
+                                    rxLen += read;
+                                    swIdle.Restart();
+                                }
+                            }
+                            else
+                            {
+                                // 缓冲区满且长时间未能成功解帧，丢弃陈旧字节防止死锁挂起
+                                Array.Copy(rxBuf, 256, rxBuf, 0, rxLen - 256);
+                                rxLen -= 256;
+                            }
+                        }
 
-                                    // 1. 检查是否包含 Pylontech ASCII 帧 ('~' ... '\r')
-                                    int soiIndex = -1;
-                                    for (int i = 0; i < rxLen; i++)
+                        // 分包解帧检测与超时处理 (外置于 bytesToRead，确保静默超时也能解出帧或清理残包)
+                        while (rxLen > 0)
+                        {
+                            byte[] currentFrame = null;
+
+                            // 1. 检查是否包含 Pylontech ASCII 帧 ('~' ... '\r')
+                            int soiIndex = -1;
+                            for (int i = 0; i < rxLen; i++)
+                            {
+                                if (rxBuf[i] == (byte)'~') { soiIndex = i; break; }
+                            }
+
+                            if (soiIndex >= 0)
+                            {
+                                int eoiIndex = -1;
+                                for (int i = soiIndex; i < rxLen; i++)
+                                {
+                                    if (rxBuf[i] == 0x0D) { eoiIndex = i; break; }
+                                }
+
+                                if (eoiIndex >= 0)
+                                {
+                                    if (soiIndex > 0)
                                     {
-                                        if (rxBuf[i] == (byte)'~') { soiIndex = i; break; }
+                                        Array.Copy(rxBuf, soiIndex, rxBuf, 0, rxLen - soiIndex);
+                                        rxLen -= soiIndex;
+                                        eoiIndex -= soiIndex;
                                     }
 
-                                    if (soiIndex >= 0)
+                                    int frameLen = eoiIndex + 1;
+                                    currentFrame = new byte[frameLen];
+                                    Array.Copy(rxBuf, 0, currentFrame, 0, frameLen);
+                                    Array.Copy(rxBuf, frameLen, rxBuf, 0, rxLen - frameLen);
+                                    rxLen -= frameLen;
+                                }
+                                else if (soiIndex > 0)
+                                {
+                                    // '~' 前面有噪声杂散字节，直接丢弃前导噪声
+                                    Array.Copy(rxBuf, soiIndex, rxBuf, 0, rxLen - soiIndex);
+                                    rxLen -= soiIndex;
+                                }
+                            }
+
+                            // 2. 检查是否包含 Modbus RTU 8 字节标准查询
+                            if (currentFrame == null)
+                            {
+                                int mbIdx = -1;
+                                for (int i = 0; i <= rxLen - 8; i++)
+                                {
+                                    if (rxBuf[i + 1] == 0x03 && ModbusCrc.Check(rxBuf, 8, i))
                                     {
-                                        int eoiIndex = -1;
-                                        for (int i = soiIndex; i < rxLen; i++)
-                                        {
-                                            if (rxBuf[i] == 0x0D) { eoiIndex = i; break; }
-                                        }
-
-                                        if (eoiIndex >= 0)
-                                        {
-                                            if (soiIndex > 0)
-                                            {
-                                                Array.Copy(rxBuf, soiIndex, rxBuf, 0, rxLen - soiIndex);
-                                                rxLen -= soiIndex;
-                                                eoiIndex -= soiIndex;
-                                            }
-
-                                            int frameLen = eoiIndex + 1;
-                                            currentFrame = new byte[frameLen];
-                                            Array.Copy(rxBuf, 0, currentFrame, 0, frameLen);
-                                            Array.Copy(rxBuf, frameLen, rxBuf, 0, rxLen - frameLen);
-                                            rxLen -= frameLen;
-                                        }
-                                    }
-
-                                    // 2. 检查是否包含 Modbus RTU 8 字节标准查询
-                                    if (currentFrame == null)
-                                    {
-                                        int mbIdx = -1;
-                                        for (int i = 0; i <= rxLen - 8; i++)
-                                        {
-                                            if (rxBuf[i + 1] == 0x03 && ModbusCrc.Check(rxBuf, 8, i))
-                                            {
-                                                mbIdx = i;
-                                                break;
-                                            }
-                                        }
-
-                                        if (mbIdx >= 0)
-                                        {
-                                            if (mbIdx > 0)
-                                            {
-                                                Array.Copy(rxBuf, mbIdx, rxBuf, 0, rxLen - mbIdx);
-                                                rxLen -= mbIdx;
-                                            }
-
-                                            int frameLen = 8;
-                                            currentFrame = new byte[frameLen];
-                                            Array.Copy(rxBuf, 0, currentFrame, 0, frameLen);
-                                            Array.Copy(rxBuf, frameLen, rxBuf, 0, rxLen - frameLen);
-                                            rxLen -= frameLen;
-                                        }
-                                        else if (rxLen > 0 && swIdle.ElapsedMilliseconds >= 35)
-                                        {
-                                            int frameLen = rxLen;
-                                            currentFrame = new byte[frameLen];
-                                            Array.Copy(rxBuf, 0, currentFrame, 0, frameLen);
-                                            rxLen = 0;
-                                        }
-                                    }
-
-                                    if (currentFrame == null) break;
-
-                                    RxCount++;
-                                    Stopwatch swResp = Stopwatch.StartNew();
-                                    if (OnLogEvent != null) OnLogEvent(this, new LogEventArgs(false, currentFrame, ""));
-
-                                    // ── 智能机型与协议识别 ──
-                                    DetectionResult det = Detector.InspectFrame(currentFrame, 0, currentFrame.Length);
-                                    if (det != null && OnInverterDetected != null)
-                                    {
-                                        OnInverterDetected(this, new DetectionEventArgs(det));
-                                    }
-
-                                    // ── 智能自适应切换 (若开启自适应且检测到已知协议) ──
-                                    if (AutoAdaptEnabled && det != null && det.Protocol != DetectedProtocolType.Unknown)
-                                    {
-                                        bool needSwitch = false;
-                                        if (det.Protocol == DetectedProtocolType.Growatt && !(ProtocolHandler is GrowattModbusHandler))
-                                        {
-                                            ProtocolHandler = new GrowattModbusHandler();
-                                            needSwitch = true;
-                                        }
-                                        else if (det.Protocol == DetectedProtocolType.Voltronic && !(ProtocolHandler is VoltronicModbusHandler))
-                                        {
-                                            ProtocolHandler = new VoltronicModbusHandler();
-                                            needSwitch = true;
-                                        }
-                                        else if (det.Protocol == DetectedProtocolType.Pylontech && !(ProtocolHandler is PylontechAsciiHandler))
-                                        {
-                                            ProtocolHandler = new PylontechAsciiHandler();
-                                            needSwitch = true;
-                                        }
-                                        else if (det.Protocol == DetectedProtocolType.Cvte && !(ProtocolHandler is CvteModbusHandler))
-                                        {
-                                            ProtocolHandler = new CvteModbusHandler();
-                                            needSwitch = true;
-                                        }
-
-                                        if (needSwitch || det.Model != InverterModel.Unknown)
-                                        {
-                                            if (OnAutoAdapted != null)
-                                            {
-                                                OnAutoAdapted(this, new AutoAdaptEventArgs(det.Protocol, det.Model));
-                                            }
-                                        }
-                                    }
-
-                                    byte[] txResp;
-                                    string decodedInfo;
-                                    if (ProtocolHandler.TryProcessQuery(currentFrame, currentFrame.Length, Model, ReplyAllIds, SpecificId, out txResp, out decodedInfo))
-                                    {
-                                        Thread.Sleep(5);
-                                        lock (_portLock) { if (_port != null && _port.IsOpen) _port.Write(txResp, 0, txResp.Length); }
-                                        swResp.Stop();
-                                        TxCount++;
-                                        if (OnLogEvent != null) OnLogEvent(this, new LogEventArgs(true, txResp, decodedInfo, swResp.ElapsedMilliseconds));
-                                    }
-                                    else
-                                    {
-                                        ErrorCount++;
+                                        mbIdx = i;
+                                        break;
                                     }
                                 }
-                                swIdle.Restart();
+
+                                if (mbIdx >= 0)
+                                {
+                                    if (mbIdx > 0)
+                                    {
+                                        Array.Copy(rxBuf, mbIdx, rxBuf, 0, rxLen - mbIdx);
+                                        rxLen -= mbIdx;
+                                    }
+
+                                    int frameLen = 8;
+                                    currentFrame = new byte[frameLen];
+                                    Array.Copy(rxBuf, 0, currentFrame, 0, frameLen);
+                                    Array.Copy(rxBuf, frameLen, rxBuf, 0, rxLen - frameLen);
+                                    rxLen -= frameLen;
+                                }
+                                else if (rxLen > 0 && swIdle.ElapsedMilliseconds >= 35)
+                                {
+                                    int frameLen = rxLen;
+                                    currentFrame = new byte[frameLen];
+                                    Array.Copy(rxBuf, 0, currentFrame, 0, frameLen);
+                                    rxLen = 0;
+                                }
                             }
+
+                            if (currentFrame == null)
+                            {
+                                if (rxLen >= 800)
+                                {
+                                    Array.Copy(rxBuf, 400, rxBuf, 0, rxLen - 400);
+                                    rxLen -= 400;
+                                }
+                                break;
+                            }
+
+                            RxCount++;
+                            Stopwatch swResp = Stopwatch.StartNew();
+                            if (OnLogEvent != null) OnLogEvent(this, new LogEventArgs(false, currentFrame, ""));
+
+                            // ── 智能机型与协议识别 ──
+                            DetectionResult det = Detector.InspectFrame(currentFrame, 0, currentFrame.Length);
+                            if (det != null && OnInverterDetected != null)
+                            {
+                                OnInverterDetected(this, new DetectionEventArgs(det));
+                            }
+
+                            // ── 智能自适应切换 (若开启自适应且检测到已知协议) ──
+                            if (AutoAdaptEnabled && det != null && det.Protocol != DetectedProtocolType.Unknown)
+                            {
+                                bool needSwitch = false;
+                                if (det.Protocol == DetectedProtocolType.Growatt && !(ProtocolHandler is GrowattModbusHandler))
+                                {
+                                    ProtocolHandler = new GrowattModbusHandler();
+                                    needSwitch = true;
+                                }
+                                else if (det.Protocol == DetectedProtocolType.Voltronic && !(ProtocolHandler is VoltronicModbusHandler))
+                                {
+                                    ProtocolHandler = new VoltronicModbusHandler();
+                                    needSwitch = true;
+                                }
+                                else if (det.Protocol == DetectedProtocolType.Pylontech && !(ProtocolHandler is PylontechAsciiHandler))
+                                {
+                                    ProtocolHandler = new PylontechAsciiHandler();
+                                    needSwitch = true;
+                                }
+                                else if (det.Protocol == DetectedProtocolType.Cvte && !(ProtocolHandler is CvteModbusHandler))
+                                {
+                                    ProtocolHandler = new CvteModbusHandler();
+                                    needSwitch = true;
+                                }
+
+                                if (needSwitch || det.Model != InverterModel.Unknown)
+                                {
+                                    if (OnAutoAdapted != null)
+                                    {
+                                        OnAutoAdapted(this, new AutoAdaptEventArgs(det.Protocol, det.Model));
+                                    }
+                                }
+                            }
+
+                            byte[] txResp;
+                            string decodedInfo;
+                            if (ProtocolHandler.TryProcessQuery(currentFrame, currentFrame.Length, Model, ReplyAllIds, SpecificId, out txResp, out decodedInfo))
+                            {
+                                Thread.Sleep(5);
+                                lock (_portLock) { if (_port != null && _port.IsOpen) _port.Write(txResp, 0, txResp.Length); }
+                                swResp.Stop();
+                                TxCount++;
+                                if (OnLogEvent != null) OnLogEvent(this, new LogEventArgs(true, txResp, decodedInfo, swResp.ElapsedMilliseconds));
+                            }
+                            else
+                            {
+                                ErrorCount++;
+                            }
+                            swIdle.Restart();
                         }
                         Thread.Sleep(1);
                     }
@@ -423,6 +450,7 @@ namespace BMS_Protocol_Simulator
                             WasScanCancelled = false;
                             if (OnStatusChanged != null) OnStatusChanged(this, "正在扫描总线在线电池包 (ID 1 ~ 15, 0)...");
                             List<byte> foundPacks = new List<byte>();
+                            BmsDataModel tempScanModel = new BmsDataModel();
 
                             // 优先扫描常见地址 1 ~ 15，最后扫描 0
                             byte[] scanList = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0 };
@@ -489,7 +517,7 @@ namespace BMS_Protocol_Simulator
                                             else
                                             {
                                                 string dummy;
-                                                if (ProtocolHandler.TryDecodeMasterResponse(probeBuf, probeLen, Model, out dummy))
+                                                if (ProtocolHandler.TryDecodeMasterResponse(probeBuf, probeLen, tempScanModel, out dummy))
                                                 {
                                                     foundPacks.Add(scanId);
                                                     RxCount++;

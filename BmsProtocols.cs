@@ -587,7 +587,7 @@ namespace BMS_Protocol_Simulator
                 case 0x0014: // Error Code (PDF Page 8, 10-11)
                     ushort err = 0;
                     if (model.ProtOverCurrent) { err |= (1 << 0); err |= (1 << 11); }  // Bit 0: OCD (放电过流), Bit 11: OCC (充电过流)
-                    if (model.ProtShortCircuit) { err |= (1 << 1); err |= (1 << 3); } // Bit 1: SCD (放电短路)
+                    if (model.ProtShortCircuit) err |= (1 << 1);                       // Bit 1: SCD (放电短路，移除误置位欠压Bit 3)
                     if (model.ProtOverVolt) err |= (1 << 2);                          // Bit 2: OV (总压/单体过压)
                     if (model.ProtUnderVolt) err |= (1 << 3);                         // Bit 3: UV (总压/单体欠压)
                     if (model.ProtHighTemp) { err |= (1 << 4); err |= (1 << 5); err |= (1 << 12); err |= (1 << 13); } // Bit 4: OTD, Bit 5: OTC, Bit 12: MOS OT, Bit 13: 环境 OT (3KU检测0x0030, 6KU全检测)
@@ -1361,7 +1361,7 @@ namespace BMS_Protocol_Simulator
                     byte warn1 = 0;
                     if (model.WarnGlobalOverVolt) warn1 |= (0x80 | 0x20);  // Bit 7: 模块总压高压, Bit 5: 单芯电压高压 (兼容3KU/6KU)
                     if (model.WarnGlobalUnderVolt) warn1 |= (0x40 | 0x10); // Bit 6: 模块总压低压, Bit 4: 单芯电压低压
-                    if (model.WarnSingleOverVolt) warn1 |= (0x40 | 0x20);  // 兼容3KU 0x4000 及 6KU 0x2000 校验
+                    if (model.WarnSingleOverVolt) warn1 |= (0x80 | 0x20);  // 修正为过压位: Bit 7 模块总压高压, Bit 5 单芯高压 (兼容3KU/6KU)
                     if (model.WarnSingleUnderVolt) warn1 |= (0x10 | 0x40); // 兼容3KU 0x1000 及 6KU 0x1000 校验
                     if (model.WarnHighTemp) warn1 |= (0x08 | 0x02);        // Bit 3: 单芯高温, Bit 1: MOSFET 高温 (3KU检测0x0900)
                     if (model.WarnLowTemp) warn1 |= 0x04;                  // Bit 2: 单芯低温 (3KU检测0x0400)
