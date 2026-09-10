@@ -584,6 +584,7 @@ namespace BMS_Protocol_Simulator
                         {
                             swPoll.Restart();
                             int phaseCount = Math.Max(1, ProtocolHandler.MasterPollPhaseCount);
+                            int currentPhaseDisplay = pollPhase + 1;
                             byte[] query = ProtocolHandler.BuildMasterPollFrame(TargetSlaveId, pollPhase);
                             pollPhase = (pollPhase + 1) % phaseCount;
 
@@ -594,7 +595,7 @@ namespace BMS_Protocol_Simulator
                             }
                             TxCount++;
                             if (OnLogEvent != null)
-                                OnLogEvent(this, new LogEventArgs(true, query, string.Format("[主机轮询] 发送查询 ID:{0} Phase:{1}/{2}", TargetSlaveId, pollPhase, phaseCount)));
+                                OnLogEvent(this, new LogEventArgs(true, query, string.Format("[主机轮询] 发送查询 ID:{0} Phase:{1}/{2}", TargetSlaveId, currentPhaseDisplay, phaseCount)));
                         }
 
                         // 2.4 接收外部从机应答

@@ -294,6 +294,7 @@ namespace BMS_Protocol_Simulator
         private BmsParameterProfile _editing3KU;
         private BmsParameterProfile _editing6KU;
         private string _currentlyDisplayedProfile;
+        private string _originalActiveProfileName;
         private bool _isSwitchingProfile = false;
 
         public BmsDefaultConfig ResultConfig { get; private set; }
@@ -301,6 +302,7 @@ namespace BMS_Protocol_Simulator
         public DefaultConfigDialog(BmsDefaultConfig current)
         {
             ResultConfig = current ?? new BmsDefaultConfig();
+            _originalActiveProfileName = ResultConfig.ActiveProfileName;
             _editing3KU = ResultConfig.Profile3KU != null ? ResultConfig.Profile3KU.Clone() : new BmsParameterProfile("3KU");
             _editing6KU = ResultConfig.Profile6KU != null ? ResultConfig.Profile6KU.Clone() : new BmsParameterProfile("6KU");
             _currentlyDisplayedProfile = ResultConfig.ActiveProfileName ?? "3KU";
@@ -388,7 +390,7 @@ namespace BMS_Protocol_Simulator
                     return;
                 }
 
-                ResultConfig.ActiveProfileName = _currentlyDisplayedProfile;
+                ResultConfig.ActiveProfileName = _originalActiveProfileName;
                 ResultConfig.Profile3KU = _editing3KU;
                 ResultConfig.Profile6KU = _editing6KU;
                 ResultConfig.Save();
@@ -2839,7 +2841,38 @@ namespace BMS_Protocol_Simulator
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            _comm.Close();
+            if (_flashTimers != null)
+            {
+                foreach (Timer tmr in _flashTimers.Values)
+                {
+                    if (tmr != null)
+                    {
+                        try
+                        {
+                            tmr.Stop();
+                            tmr.Dispose();
+                        }
+                        catch { }
+                    }
+                }
+                _flashTimers.Clear();
+            }
+
+            if (_paramTip != null)
+            {
+                try { _paramTip.Dispose(); _paramTip = null; } catch { }
+            }
+
+            if (_bannerTip != null)
+            {
+                try { _bannerTip.Dispose(); _bannerTip = null; } catch { }
+            }
+
+            if (_comm != null)
+            {
+                _comm.Close();
+            }
+
             base.OnFormClosing(e);
         }
     }

@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Text;
 using System.Collections.Generic;
+using System.Globalization;
 
 namespace BMS_Protocol_Simulator
 {
@@ -161,7 +162,8 @@ namespace BMS_Protocol_Simulator
                         : config.Profile3KU;
 
                     double dVal;
-                    if (double.TryParse(val, out dVal))
+                    if (double.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out dVal) ||
+                        double.TryParse(val.Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out dVal))
                     {
                         if (key.Equals("Voltage", StringComparison.OrdinalIgnoreCase)) targetProfile.Voltage = dVal;
                         else if (key.Equals("Current", StringComparison.OrdinalIgnoreCase)) targetProfile.Current = dVal;
@@ -194,33 +196,33 @@ namespace BMS_Protocol_Simulator
                 sb.AppendLine();
 
                 sb.AppendLine("[Profile_3KU]");
-                sb.AppendLine(string.Format("Voltage={0:F2}", Profile3KU.Voltage));
-                sb.AppendLine(string.Format("Current={0:F2}", Profile3KU.Current));
-                sb.AppendLine(string.Format("Temperature={0:F1}", Profile3KU.Temperature));
-                sb.AppendLine(string.Format("SOC={0:F1}", Profile3KU.SOC));
-                sb.AppendLine(string.Format("SOH={0:F0}", Profile3KU.SOH));
-                sb.AppendLine(string.Format("RemainingCapacity={0:F1}", Profile3KU.RemainingCapacity));
-                sb.AppendLine(string.Format("FullCapacity={0:F1}", Profile3KU.FullCapacity));
-                sb.AppendLine(string.Format("MaxChargeCurrent={0:F1}", Profile3KU.MaxChargeCurrent));
-                sb.AppendLine(string.Format("MaxDischargeCurrent={0:F1}", Profile3KU.MaxDischargeCurrent));
-                sb.AppendLine(string.Format("CVVoltage={0:F2}", Profile3KU.CVVoltage));
-                sb.AppendLine(string.Format("CutoffVoltage={0:F2}", Profile3KU.CutoffVoltage));
-                sb.AppendLine(string.Format("CycleCount={0}", Profile3KU.CycleCount));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "Voltage={0:F2}", Profile3KU.Voltage));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "Current={0:F2}", Profile3KU.Current));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "Temperature={0:F1}", Profile3KU.Temperature));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "SOC={0:F1}", Profile3KU.SOC));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "SOH={0:F0}", Profile3KU.SOH));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "RemainingCapacity={0:F1}", Profile3KU.RemainingCapacity));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "FullCapacity={0:F1}", Profile3KU.FullCapacity));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "MaxChargeCurrent={0:F1}", Profile3KU.MaxChargeCurrent));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "MaxDischargeCurrent={0:F1}", Profile3KU.MaxDischargeCurrent));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "CVVoltage={0:F2}", Profile3KU.CVVoltage));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "CutoffVoltage={0:F2}", Profile3KU.CutoffVoltage));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "CycleCount={0}", Profile3KU.CycleCount));
                 sb.AppendLine();
 
                 sb.AppendLine("[Profile_6KU]");
-                sb.AppendLine(string.Format("Voltage={0:F2}", Profile6KU.Voltage));
-                sb.AppendLine(string.Format("Current={0:F2}", Profile6KU.Current));
-                sb.AppendLine(string.Format("Temperature={0:F1}", Profile6KU.Temperature));
-                sb.AppendLine(string.Format("SOC={0:F1}", Profile6KU.SOC));
-                sb.AppendLine(string.Format("SOH={0:F0}", Profile6KU.SOH));
-                sb.AppendLine(string.Format("RemainingCapacity={0:F1}", Profile6KU.RemainingCapacity));
-                sb.AppendLine(string.Format("FullCapacity={0:F1}", Profile6KU.FullCapacity));
-                sb.AppendLine(string.Format("MaxChargeCurrent={0:F1}", Profile6KU.MaxChargeCurrent));
-                sb.AppendLine(string.Format("MaxDischargeCurrent={0:F1}", Profile6KU.MaxDischargeCurrent));
-                sb.AppendLine(string.Format("CVVoltage={0:F2}", Profile6KU.CVVoltage));
-                sb.AppendLine(string.Format("CutoffVoltage={0:F2}", Profile6KU.CutoffVoltage));
-                sb.AppendLine(string.Format("CycleCount={0}", Profile6KU.CycleCount));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "Voltage={0:F2}", Profile6KU.Voltage));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "Current={0:F2}", Profile6KU.Current));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "Temperature={0:F1}", Profile6KU.Temperature));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "SOC={0:F1}", Profile6KU.SOC));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "SOH={0:F0}", Profile6KU.SOH));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "RemainingCapacity={0:F1}", Profile6KU.RemainingCapacity));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "FullCapacity={0:F1}", Profile6KU.FullCapacity));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "MaxChargeCurrent={0:F1}", Profile6KU.MaxChargeCurrent));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "MaxDischargeCurrent={0:F1}", Profile6KU.MaxDischargeCurrent));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "CVVoltage={0:F2}", Profile6KU.CVVoltage));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "CutoffVoltage={0:F2}", Profile6KU.CutoffVoltage));
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "CycleCount={0}", Profile6KU.CycleCount));
 
                 File.WriteAllText(path, sb.ToString(), Encoding.UTF8);
             }

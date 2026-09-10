@@ -2112,10 +2112,18 @@ namespace BMS_Protocol_Simulator
                     {
                         string asciiStr = Encoding.ASCII.GetString(slice);
                         string cid2 = asciiStr.Substring(7, 2).ToUpper();
+                        byte slaveId = 0;
+                        if (asciiStr.Length >= 5)
+                        {
+                            string adrStr = asciiStr.Substring(3, 2);
+                            byte.TryParse(adrStr, System.Globalization.NumberStyles.HexNumber, null, out slaveId);
+                        }
+
                         DetectionResult res = new DetectionResult();
+                        res.SlaveId = slaveId;
                         res.Protocol = DetectedProtocolType.Pylontech;
                         res.Timestamp = DateTime.Now;
-                        res.RawSignature = string.Format("Pylontech ASCII: CID2={0}H", cid2);
+                        res.RawSignature = string.Format("Pylontech ASCII: ADR=0x{0:X2}, CID2={1}H", slaveId, cid2);
 
                         if (cid2 == "60")
                         {
@@ -2131,6 +2139,7 @@ namespace BMS_Protocol_Simulator
 
                         _latchedProtocol = res.Protocol;
                         if (res.Model != InverterModel.Unknown) _latchedModel = res.Model;
+                        _latchedSlaveId = slaveId;
                         _lastDetectedTime = res.Timestamp;
                         return res;
                     }
