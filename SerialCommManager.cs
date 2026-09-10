@@ -325,10 +325,17 @@ namespace BMS_Protocol_Simulator
                                     Array.Copy(rxBuf, soiIndex, rxBuf, 0, rxLen - soiIndex);
                                     rxLen -= soiIndex;
                                 }
+                                else if (swIdle.ElapsedMilliseconds >= 250)
+                                {
+                                    // Pylontech ASCII 帧以 '~' 开头但长时间未收到 '\r'，丢弃无效首字节恢复解包
+                                    Array.Copy(rxBuf, 1, rxBuf, 0, rxLen - 1);
+                                    rxLen--;
+                                    swIdle.Restart();
+                                }
                             }
 
-                            // 2. 检查是否包含 Modbus RTU 8 字节标准查询
-                            if (currentFrame == null)
+                            // 2. 检查是否包含 Modbus RTU 8 字节标准查询 (当未在等待未完成的 ASCII 帧时)
+                            if (currentFrame == null && soiIndex < 0)
                             {
                                 int mbIdx = -1;
                                 for (int i = 0; i <= rxLen - 8; i++)
@@ -507,7 +514,12 @@ namespace BMS_Protocol_Simulator
                                         {
                                             if (ProtocolHandler is PylontechAsciiHandler)
                                             {
-                                                if (probeBuf[0] == '~' && (probeBuf[probeLen - 1] == 0x0D || probeLen >= 30))
+                                                int crPos = -1;
+                                                for (int p = 0; p < probeLen; p++)
+                                                {
+                                                    if (probeBuf[p] == 0x0D) { crPos = p; break; }
+                                                }
+                                                if (crPos >= 0)
                                                 {
                                                     foundPacks.Add(scanId);
                                                     RxCount++;

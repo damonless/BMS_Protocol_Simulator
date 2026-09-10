@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.IO.Ports;
 using System.Runtime.InteropServices;
@@ -1256,6 +1257,17 @@ namespace BMS_Protocol_Simulator
         // ══════════════════════════════════════════════════════════
         // 核心 NumericUpDown 交互行为与三级参数校验
         // ══════════════════════════════════════════════════════════
+        private static TextBox GetInnerTextBox(NumericUpDown num)
+        {
+            if (num == null) return null;
+            for (int i = 0; i < num.Controls.Count; i++)
+            {
+                if (num.Controls[i] is TextBox)
+                    return (TextBox)num.Controls[i];
+            }
+            return null;
+        }
+
         private NumericUpDown CreateBoundNumeric(int decimals, decimal min, decimal max, decimal increment, decimal initVal)
         {
             NumericUpDown num = new NumericUpDown
@@ -1272,7 +1284,7 @@ namespace BMS_Protocol_Simulator
             _committedValues[num] = initVal;
             _isDirty[num] = false;
 
-            TextBox innerTb = (num.Controls.Count > 1 && num.Controls[1] is TextBox) ? (TextBox)num.Controls[1] : null;
+            TextBox innerTb = GetInnerTextBox(num);
 
             num.Enter += delegate(object s, EventArgs e) {
                 _currentFocusedControl = num;
@@ -1338,9 +1350,9 @@ namespace BMS_Protocol_Simulator
             _isUpdatingUi = true;
             decimal committed = _committedValues.ContainsKey(num) ? _committedValues[num] : num.Value;
             num.Value = committed;
-            if (num.Controls.Count > 1 && num.Controls[1] is TextBox)
+            TextBox tb = GetInnerTextBox(num);
+            if (tb != null)
             {
-                TextBox tb = (TextBox)num.Controls[1];
                 tb.Text = (num.DecimalPlaces > 0) ? committed.ToString("F" + num.DecimalPlaces) : committed.ToString("F0");
                 tb.SelectionLength = 0;
             }
@@ -1548,11 +1560,12 @@ namespace BMS_Protocol_Simulator
 
         private void CommitSingleControl(NumericUpDown num)
         {
-            if (num.Controls.Count > 1 && num.Controls[1] is TextBox)
+            TextBox tb = GetInnerTextBox(num);
+            if (tb != null)
             {
-                TextBox tb = (TextBox)num.Controls[1];
                 decimal parsed;
-                if (decimal.TryParse(tb.Text, out parsed))
+                if (decimal.TryParse(tb.Text, NumberStyles.Any, CultureInfo.InvariantCulture, out parsed) ||
+                    decimal.TryParse(tb.Text, NumberStyles.Any, CultureInfo.CurrentCulture, out parsed))
                 {
                     if (parsed < num.Minimum || parsed > num.Maximum)
                     {
@@ -1703,11 +1716,8 @@ namespace BMS_Protocol_Simulator
             ctrl.BackColor = color;
             if (ctrl is NumericUpDown)
             {
-                NumericUpDown num = (NumericUpDown)ctrl;
-                if (num.Controls.Count > 1 && num.Controls[1] is TextBox)
-                {
-                    num.Controls[1].BackColor = color;
-                }
+                TextBox tb = GetInnerTextBox((NumericUpDown)ctrl);
+                if (tb != null) tb.BackColor = color;
             }
 
             if (!_flashTimers.ContainsKey(ctrl))
@@ -1720,11 +1730,8 @@ namespace BMS_Protocol_Simulator
                         ctrl.BackColor = defaultBg;
                         if (ctrl is NumericUpDown)
                         {
-                            NumericUpDown num = (NumericUpDown)ctrl;
-                            if (num.Controls.Count > 1 && num.Controls[1] is TextBox)
-                            {
-                                num.Controls[1].BackColor = defaultBg;
-                            }
+                            TextBox tb = GetInnerTextBox((NumericUpDown)ctrl);
+                            if (tb != null) tb.BackColor = defaultBg;
                         }
                     }
                 };
@@ -2556,8 +2563,13 @@ namespace BMS_Protocol_Simulator
 
         private void Comm_OnInverterDetected(object sender, DetectionEventArgs e)
         {
-            _lastDetectionResult = e.Result;
-            UpdateModelMatchBanner();
+            if (this.IsDisposed || !this.IsHandleCreated) return;
+            this.BeginInvoke(new Action(delegate()
+            {
+                if (this.IsDisposed) return;
+                _lastDetectionResult = e.Result;
+                UpdateModelMatchBanner();
+            }));
         }
 
         private void Comm_OnAutoAdapted(object sender, AutoAdaptEventArgs e)
@@ -2657,9 +2669,9 @@ namespace BMS_Protocol_Simulator
             if (num == null) return;
             decimal clampedVal = Math.Max(num.Minimum, Math.Min(num.Maximum, val));
             num.Value = clampedVal;
-            if (num.Controls.Count > 1 && num.Controls[1] is TextBox)
+            TextBox tb = GetInnerTextBox(num);
+            if (tb != null)
             {
-                TextBox tb = (TextBox)num.Controls[1];
                 tb.Text = (num.DecimalPlaces > 0) ? clampedVal.ToString("F" + num.DecimalPlaces) : clampedVal.ToString("F0");
             }
             _committedValues[num] = clampedVal;
@@ -2672,7 +2684,7 @@ namespace BMS_Protocol_Simulator
 
             this.BeginInvoke(new Action(delegate()
             {
-                if (this.IsDisposed || rtbLog.IsDisposed) return;
+                if (this.IsDisposed || rtbLog.IsDisposed || !rtbLog.IsHandleCreated) return;
 
                 // 5000 行上限截断保护 (Win32 O(1) 免 GC 查询，防止长期自动化测试 OOM)
                 int lineCount = (int)SendMessage(rtbLog.Handle, EM_GETLINECOUNT, IntPtr.Zero, IntPtr.Zero);

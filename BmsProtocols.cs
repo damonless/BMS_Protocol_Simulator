@@ -795,19 +795,17 @@ namespace BMS_Protocol_Simulator
                     model.StatusChargeEnable = (status & (1 << 6)) != 0;
                     model.StatusForceCharge = (status & (1 << 12)) != 0;
 
-                    // 0x0014: 错误与告警
+                    // 0x0014: 保护与故障信息 (Error Code)
                     ushort err = (ushort)((rxBuffer[5] << 8) | rxBuffer[6]);
-                    model.WarnSingleOverVolt = (err & (1 << 0)) != 0;
-                    model.WarnSingleUnderVolt = (err & (1 << 1)) != 0;
-                    model.WarnGlobalOverVolt = (err & (1 << 2)) != 0;
-                    model.WarnGlobalUnderVolt = (err & (1 << 3)) != 0;
-                    model.WarnOverCurrent = (err & ((1 << 4) | (1 << 5))) != 0;
-                    model.WarnHighTemp = (err & ((1 << 6) | (1 << 8) | (1 << 10) | (1 << 11))) != 0;
-                    model.WarnLowTemp = (err & ((1 << 7) | (1 << 9) | (1 << 12))) != 0;
+                    model.ProtOverCurrent = (err & ((1 << 0) | (1 << 11))) != 0;
+                    model.ProtShortCircuit = (err & (1 << 1)) != 0;
+                    model.ProtOverVolt = (err & (1 << 2)) != 0;
+                    model.ProtUnderVolt = (err & (1 << 3)) != 0;
+                    model.ProtHighTemp = (err & ((1 << 4) | (1 << 5) | (1 << 12) | (1 << 13))) != 0;
+                    model.ProtUnderTemp = (err & ((1 << 6) | (1 << 7) | (1 << 14))) != 0;
                     model.ProtSoftStart = (err & (1 << 8)) != 0;
                     model.ProtSystemFault = (err & (1 << 9)) != 0;
                     model.WarnVoltDiff = (err & (1 << 10)) != 0;
-                    model.WarnLowCapacity = (err & (1 << 13)) != 0;
 
                     // 0x0015: SOC (1%)
                     model.SOC = (rxBuffer[7] << 8) | rxBuffer[8];
@@ -826,17 +824,42 @@ namespace BMS_Protocol_Simulator
 
                     // 0x001E: 循环次数
                     model.CycleCount = (rxBuffer[25] << 8) | rxBuffer[26];
-                    // 0x001F: SOH
-                    ushort soh = (ushort)((rxBuffer[27] << 8) | rxBuffer[28]);
+                    // 0x0020: SOH (Bit 0~6: SOH Counter, Bit 7: SOH Flag)
+                    ushort sohRaw = (ushort)((rxBuffer[29] << 8) | rxBuffer[30]);
+                    byte soh = (byte)(sohRaw & 0x7F);
                     if (soh > 0 && soh <= 100) model.SOH = soh;
 
                     // 0x0021: CV 恒压点 (10mV)
                     model.CVVoltage = ((rxBuffer[31] << 8) | rxBuffer[32]) / 100.0;
+
+                    // 0x0022: 告警信息 (Warning Code)
+                    ushort warn = (ushort)((rxBuffer[33] << 8) | rxBuffer[34]);
+                    model.WarnSingleOverVolt = (warn & (1 << 0)) != 0;
+                    model.WarnSingleUnderVolt = (warn & (1 << 1)) != 0;
+                    model.WarnGlobalOverVolt = (warn & (1 << 2)) != 0;
+                    model.WarnGlobalUnderVolt = (warn & (1 << 3)) != 0;
+                    model.WarnOverCurrent = (warn & ((1 << 4) | (1 << 5))) != 0;
+                    model.WarnHighTemp = (warn & ((1 << 6) | (1 << 8) | (1 << 10) | (1 << 11))) != 0;
+                    model.WarnLowTemp = (warn & ((1 << 7) | (1 << 9) | (1 << 12))) != 0;
+                    model.WarnLowCapacity = (warn & (1 << 13)) != 0;
+
                     // 0x0023: 最大放电电流 (10mA)
                     model.MaxDischargeCurrent = ((rxBuffer[35] << 8) | rxBuffer[36]) / 100.0;
                 }
                 else if (byteCount >= 30) // 15 寄存器 (0x0014~0x0022 兼容格式)
                 {
+                    // 0x0014: 保护与故障信息
+                    ushort err = (ushort)((rxBuffer[3] << 8) | rxBuffer[4]);
+                    model.ProtOverCurrent = (err & ((1 << 0) | (1 << 11))) != 0;
+                    model.ProtShortCircuit = (err & (1 << 1)) != 0;
+                    model.ProtOverVolt = (err & (1 << 2)) != 0;
+                    model.ProtUnderVolt = (err & (1 << 3)) != 0;
+                    model.ProtHighTemp = (err & ((1 << 4) | (1 << 5) | (1 << 12) | (1 << 13))) != 0;
+                    model.ProtUnderTemp = (err & ((1 << 6) | (1 << 7) | (1 << 14))) != 0;
+                    model.ProtSoftStart = (err & (1 << 8)) != 0;
+                    model.ProtSystemFault = (err & (1 << 9)) != 0;
+                    model.WarnVoltDiff = (err & (1 << 10)) != 0;
+
                     model.SOC = (rxBuffer[5] << 8) | rxBuffer[6];
                     model.Voltage = ((rxBuffer[7] << 8) | rxBuffer[8]) / 100.0;
                     model.Current = (short)((rxBuffer[9] << 8) | rxBuffer[10]) / 100.0;
@@ -844,7 +867,23 @@ namespace BMS_Protocol_Simulator
                     model.MaxChargeCurrent = ((rxBuffer[13] << 8) | rxBuffer[14]) / 100.0;
                     model.RemainingCapacity = ((rxBuffer[15] << 8) | rxBuffer[16]) / 100.0;
                     model.FullCapacity = ((rxBuffer[17] << 8) | rxBuffer[18]) / 100.0;
+
+                    model.CycleCount = (rxBuffer[23] << 8) | rxBuffer[24];
+                    ushort sohRaw = (ushort)((rxBuffer[27] << 8) | rxBuffer[28]);
+                    byte soh = (byte)(sohRaw & 0x7F);
+                    if (soh > 0 && soh <= 100) model.SOH = soh;
+
                     model.CVVoltage = ((rxBuffer[29] << 8) | rxBuffer[30]) / 100.0;
+
+                    ushort warn = (ushort)((rxBuffer[31] << 8) | rxBuffer[32]);
+                    model.WarnSingleOverVolt = (warn & (1 << 0)) != 0;
+                    model.WarnSingleUnderVolt = (warn & (1 << 1)) != 0;
+                    model.WarnGlobalOverVolt = (warn & (1 << 2)) != 0;
+                    model.WarnGlobalUnderVolt = (warn & (1 << 3)) != 0;
+                    model.WarnOverCurrent = (warn & ((1 << 4) | (1 << 5))) != 0;
+                    model.WarnHighTemp = (warn & ((1 << 6) | (1 << 8) | (1 << 10) | (1 << 11))) != 0;
+                    model.WarnLowTemp = (warn & ((1 << 7) | (1 << 9) | (1 << 12))) != 0;
+                    model.WarnLowCapacity = (warn & (1 << 13)) != 0;
                 }
             }
 
