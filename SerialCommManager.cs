@@ -84,6 +84,7 @@ namespace BMS_Protocol_Simulator
         // ── 智能机型/协议识别与自适应 ──
         public InverterDetector Detector { get; private set; }
         public bool AutoAdaptEnabled { get; set; }
+        private InverterModel _lastAdaptedModel = InverterModel.Unknown;
 
         // ── 主机模式可控参数 ──
         public byte TargetSlaveId { get; set; }
@@ -191,6 +192,7 @@ namespace BMS_Protocol_Simulator
             TxCount = 0;
             ErrorCount = 0;
             IsBmsLost = false;
+            _lastAdaptedModel = InverterModel.Unknown;
             if (Detector != null) Detector.Reset();
         }
 
@@ -232,6 +234,33 @@ namespace BMS_Protocol_Simulator
                 if (OnStatusChanged != null)
                     OnStatusChanged(this, "下发控制指令失败: " + desc);
             }
+        }
+
+        private static bool IsAsciiHexByte(byte b)
+        {
+            return (b >= (byte)'0' && b <= (byte)'9') ||
+                   (b >= (byte)'A' && b <= (byte)'F') ||
+                   (b >= (byte)'a' && b <= (byte)'f');
+        }
+
+        // 判断 rxBuf[soiIndex] 处的 '~' 是否是合法的 Pylontech ASCII 帧头候选，避免二进制 Modbus 报文中的 0x7E 造成假阳性阻塞
+        private static bool IsValidPylonCandidate(byte[] buf, int soiIndex, int totalLen)
+        {
+            if (soiIndex < 0 || soiIndex >= totalLen || buf[soiIndex] != (byte)'~') return false;
+            int checkEnd = Math.Min(totalLen, soiIndex + 64);
+            for (int i = soiIndex + 1; i < checkEnd; i++)
+            {
+                byte b = buf[i];
+                if (b == 0x0D)
+                {
+                    return (i - soiIndex) >= 17;
+                }
+                if (!IsAsciiHexByte(b))
+                {
+                    return false;
+                }
+            }
+            return true;
         }
 
         private void WorkerLoop()
@@ -289,14 +318,44 @@ namespace BMS_Protocol_Simulator
                         {
                             byte[] currentFrame = null;
 
-                            // 1. 检查是否包含 Pylontech ASCII 帧 ('~' ... '\r')
+                            // 1. 查找合法的 Pylontech ASCII 帧候选 ('~' 后跟纯 ASCII Hex 字符并以 '\r' 结尾)
                             int soiIndex = -1;
                             for (int i = 0; i < rxLen; i++)
                             {
-                                if (rxBuf[i] == (byte)'~') { soiIndex = i; break; }
+                                if (rxBuf[i] == (byte)'~' && IsValidPylonCandidate(rxBuf, i, rxLen))
+                                {
+                                    soiIndex = i;
+                                    break;
+                                }
                             }
 
-                            if (soiIndex >= 0)
+                            // 2. 查找合法的 8 字节 Modbus RTU 标准查询帧
+                            int mbIdx = -1;
+                            for (int i = 0; i <= rxLen - 8; i++)
+                            {
+                                if (rxBuf[i + 1] == 0x03 && ModbusCrc.Check(rxBuf, 8, i))
+                                {
+                                    mbIdx = i;
+                                    break;
+                                }
+                            }
+
+                            // 若先出现完整的 Modbus RTU 查询帧，优先提取 Modbus 帧（彻底杜绝 0x7E 字节饿死 Modbus）
+                            if (mbIdx >= 0 && (soiIndex < 0 || mbIdx < soiIndex))
+                            {
+                                if (mbIdx > 0)
+                                {
+                                    Array.Copy(rxBuf, mbIdx, rxBuf, 0, rxLen - mbIdx);
+                                    rxLen -= mbIdx;
+                                }
+
+                                int frameLen = 8;
+                                currentFrame = new byte[frameLen];
+                                Array.Copy(rxBuf, 0, currentFrame, 0, frameLen);
+                                Array.Copy(rxBuf, frameLen, rxBuf, 0, rxLen - frameLen);
+                                rxLen -= frameLen;
+                            }
+                            else if (soiIndex >= 0)
                             {
                                 int eoiIndex = -1;
                                 for (int i = soiIndex; i < rxLen; i++)
@@ -333,41 +392,12 @@ namespace BMS_Protocol_Simulator
                                     swIdle.Restart();
                                 }
                             }
-
-                            // 2. 检查是否包含 Modbus RTU 8 字节标准查询 (当未在等待未完成的 ASCII 帧时)
-                            if (currentFrame == null && soiIndex < 0)
+                            else if (rxLen > 0 && swIdle.ElapsedMilliseconds >= 35)
                             {
-                                int mbIdx = -1;
-                                for (int i = 0; i <= rxLen - 8; i++)
-                                {
-                                    if (rxBuf[i + 1] == 0x03 && ModbusCrc.Check(rxBuf, 8, i))
-                                    {
-                                        mbIdx = i;
-                                        break;
-                                    }
-                                }
-
-                                if (mbIdx >= 0)
-                                {
-                                    if (mbIdx > 0)
-                                    {
-                                        Array.Copy(rxBuf, mbIdx, rxBuf, 0, rxLen - mbIdx);
-                                        rxLen -= mbIdx;
-                                    }
-
-                                    int frameLen = 8;
-                                    currentFrame = new byte[frameLen];
-                                    Array.Copy(rxBuf, 0, currentFrame, 0, frameLen);
-                                    Array.Copy(rxBuf, frameLen, rxBuf, 0, rxLen - frameLen);
-                                    rxLen -= frameLen;
-                                }
-                                else if (rxLen > 0 && swIdle.ElapsedMilliseconds >= 35)
-                                {
-                                    int frameLen = rxLen;
-                                    currentFrame = new byte[frameLen];
-                                    Array.Copy(rxBuf, 0, currentFrame, 0, frameLen);
-                                    rxLen = 0;
-                                }
+                                int frameLen = rxLen;
+                                currentFrame = new byte[frameLen];
+                                Array.Copy(rxBuf, 0, currentFrame, 0, frameLen);
+                                rxLen = 0;
                             }
 
                             if (currentFrame == null)
@@ -382,7 +412,6 @@ namespace BMS_Protocol_Simulator
 
                             RxCount++;
                             Stopwatch swResp = Stopwatch.StartNew();
-                            if (OnLogEvent != null) OnLogEvent(this, new LogEventArgs(false, currentFrame, ""));
 
                             // ── 智能机型与协议识别 ──
                             DetectionResult det = Detector.InspectFrame(currentFrame, 0, currentFrame.Length);
@@ -391,7 +420,7 @@ namespace BMS_Protocol_Simulator
                                 OnInverterDetected(this, new DetectionEventArgs(det));
                             }
 
-                            // ── 智能自适应切换 (若开启自适应且检测到已知协议) ──
+                            // ── 智能自适应切换 (若开启自适应且检测到已知协议，在首帧应答前同步完成切换) ──
                             if (AutoAdaptEnabled && det != null && det.Protocol != DetectedProtocolType.Unknown)
                             {
                                 bool needSwitch = false;
@@ -416,7 +445,22 @@ namespace BMS_Protocol_Simulator
                                     needSwitch = true;
                                 }
 
-                                if (needSwitch || det.Model != InverterModel.Unknown)
+                                bool modelChanged = (det.Model != InverterModel.Unknown && det.Model != _lastAdaptedModel);
+                                if (modelChanged)
+                                {
+                                    _lastAdaptedModel = det.Model;
+                                    // 在首帧构建应答前同步更新 Model 套系参数，防止首帧返回错误的 51.2V/25.6V 触发逆变器故障
+                                    BmsDefaultConfig cfg = BmsDefaultConfig.Load();
+                                    string targetModelName = det.Model == InverterModel.INV_3KU ? "3KU" : "6KU";
+                                    if (cfg.ActiveProfileName != targetModelName)
+                                    {
+                                        cfg.ActiveProfileName = targetModelName;
+                                        cfg.Save();
+                                        Model.ApplyDefaultConfig(targetModelName == "6KU" ? cfg.Profile6KU : cfg.Profile3KU);
+                                    }
+                                }
+
+                                if (needSwitch || modelChanged)
                                 {
                                     if (OnAutoAdapted != null)
                                     {
@@ -427,7 +471,12 @@ namespace BMS_Protocol_Simulator
 
                             byte[] txResp;
                             string decodedInfo;
-                            if (ProtocolHandler.TryProcessQuery(currentFrame, currentFrame.Length, Model, ReplyAllIds, SpecificId, out txResp, out decodedInfo))
+                            bool processed = ProtocolHandler.TryProcessQuery(currentFrame, currentFrame.Length, Model, ReplyAllIds, SpecificId, out txResp, out decodedInfo);
+
+                            string rxSummary = (det != null && !string.IsNullOrEmpty(det.RawSignature)) ? det.RawSignature : (!processed && !string.IsNullOrEmpty(decodedInfo) ? decodedInfo : "");
+                            if (OnLogEvent != null) OnLogEvent(this, new LogEventArgs(false, currentFrame, rxSummary));
+
+                            if (processed)
                             {
                                 Thread.Sleep(5);
                                 lock (_portLock) { if (_port != null && _port.IsOpen) _port.Write(txResp, 0, txResp.Length); }
@@ -437,7 +486,11 @@ namespace BMS_Protocol_Simulator
                             }
                             else
                             {
-                                ErrorCount++;
+                                // 仅当非主动忽略（如其它从机地址）时才计入通信错误计数
+                                if (decodedInfo == null || !decodedInfo.StartsWith("[忽略]"))
+                                {
+                                    ErrorCount++;
+                                }
                             }
                             swIdle.Restart();
                         }
@@ -514,16 +567,24 @@ namespace BMS_Protocol_Simulator
                                         {
                                             if (ProtocolHandler is PylontechAsciiHandler)
                                             {
+                                                int tildePos = -1;
                                                 int crPos = -1;
                                                 for (int p = 0; p < probeLen; p++)
                                                 {
-                                                    if (probeBuf[p] == 0x0D) { crPos = p; break; }
+                                                    if (tildePos < 0 && probeBuf[p] == (byte)'~') tildePos = p;
+                                                    if (tildePos >= 0 && probeBuf[p] == 0x0D) { crPos = p; break; }
                                                 }
-                                                if (crPos >= 0)
+                                                if (tildePos >= 0 && crPos > tildePos)
                                                 {
-                                                    foundPacks.Add(scanId);
-                                                    RxCount++;
-                                                    break;
+                                                    int sliceLen = crPos - tildePos + 1;
+                                                    byte[] slice = new byte[sliceLen];
+                                                    Array.Copy(probeBuf, tildePos, slice, 0, sliceLen);
+                                                    if (PylonChecksum.Verify(slice))
+                                                    {
+                                                        foundPacks.Add(scanId);
+                                                        RxCount++;
+                                                        break;
+                                                    }
                                                 }
                                             }
                                             else
@@ -556,7 +617,7 @@ namespace BMS_Protocol_Simulator
                             swLastMasterRx.Restart();
                         }
 
-                        // 2.2 优先发送队列中的主动控制帧 (如写参数、关机)
+                        // 2.2 优先发送队列中的主动控制帧 (如写参数、关机)，并与周期轮询互斥防总线碰撞
                         KeyValuePair<byte[], string> pendingCmd = default(KeyValuePair<byte[], string>);
                         bool hasCmd = false;
                         lock (_queueLock)
@@ -576,38 +637,41 @@ namespace BMS_Protocol_Simulator
                                     _port.Write(pendingCmd.Key, 0, pendingCmd.Key.Length);
                             }
                             TxCount++;
+                            swPoll.Restart(); // 重置轮询计时器，留出完整应答窗口防止控制帧与轮询帧粘包碰撞
                             if (OnLogEvent != null)
                                 OnLogEvent(this, new LogEventArgs(true, pendingCmd.Key, pendingCmd.Value));
                         }
-
-                        // 2.3 周期轮询或单步轮询下发
-                        bool shouldPoll = false;
-                        if (_singlePollRequested)
+                        else
                         {
-                            _singlePollRequested = false;
-                            shouldPoll = true;
-                        }
-                        else if (!IsPollingPaused && PollIntervalMs > 0 && swPoll.ElapsedMilliseconds >= PollIntervalMs)
-                        {
-                            shouldPoll = true;
-                        }
-
-                        if (shouldPoll)
-                        {
-                            swPoll.Restart();
-                            int phaseCount = Math.Max(1, ProtocolHandler.MasterPollPhaseCount);
-                            int currentPhaseDisplay = pollPhase + 1;
-                            byte[] query = ProtocolHandler.BuildMasterPollFrame(TargetSlaveId, pollPhase);
-                            pollPhase = (pollPhase + 1) % phaseCount;
-
-                            lock (_portLock)
+                            // 2.3 周期轮询或单步轮询下发
+                            bool shouldPoll = false;
+                            if (_singlePollRequested)
                             {
-                                if (_port != null && _port.IsOpen)
-                                    _port.Write(query, 0, query.Length);
+                                _singlePollRequested = false;
+                                shouldPoll = true;
                             }
-                            TxCount++;
-                            if (OnLogEvent != null)
-                                OnLogEvent(this, new LogEventArgs(true, query, string.Format("[主机轮询] 发送查询 ID:{0} Phase:{1}/{2}", TargetSlaveId, currentPhaseDisplay, phaseCount)));
+                            else if (!IsPollingPaused && PollIntervalMs > 0 && swPoll.ElapsedMilliseconds >= PollIntervalMs)
+                            {
+                                shouldPoll = true;
+                            }
+
+                            if (shouldPoll)
+                            {
+                                swPoll.Restart();
+                                int phaseCount = Math.Max(1, ProtocolHandler.MasterPollPhaseCount);
+                                int currentPhaseDisplay = pollPhase + 1;
+                                byte[] query = ProtocolHandler.BuildMasterPollFrame(TargetSlaveId, pollPhase);
+                                pollPhase = (pollPhase + 1) % phaseCount;
+
+                                lock (_portLock)
+                                {
+                                    if (_port != null && _port.IsOpen)
+                                        _port.Write(query, 0, query.Length);
+                                }
+                                TxCount++;
+                                if (OnLogEvent != null)
+                                    OnLogEvent(this, new LogEventArgs(true, query, string.Format("[主机轮询] 发送查询 ID:{0} Phase:{1}/{2}", TargetSlaveId, currentPhaseDisplay, phaseCount)));
+                            }
                         }
 
                         // 2.4 接收外部从机应答
@@ -658,7 +722,46 @@ namespace BMS_Protocol_Simulator
                             }
                             else
                             {
-                                if (swIdle.ElapsedMilliseconds >= 25 || (rxLen >= 5 && ModbusCrc.Check(rxBuf, rxLen))) ready = true;
+                                // 消除 Modbus 主机接收时的 RS485 前导杂散噪声：扫描合法 CRC 子帧
+                                int validMbOffset = -1;
+                                int validMbLen = 0;
+                                for (int i = 0; i <= rxLen - 5; i++)
+                                {
+                                    byte fc = rxBuf[i + 1];
+                                    if (fc == 0x03 && i + 2 < rxLen)
+                                    {
+                                        int candidateLen = 3 + rxBuf[i + 2] + 2;
+                                        if (candidateLen >= 5 && i + candidateLen <= rxLen && ModbusCrc.Check(rxBuf, candidateLen, i))
+                                        {
+                                            validMbOffset = i;
+                                            validMbLen = candidateLen;
+                                            break;
+                                        }
+                                    }
+                                    else if ((fc == 0x06 || fc == 0x10) && i + 8 <= rxLen)
+                                    {
+                                        if (ModbusCrc.Check(rxBuf, 8, i))
+                                        {
+                                            validMbOffset = i;
+                                            validMbLen = 8;
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                if (validMbOffset >= 0)
+                                {
+                                    if (validMbOffset > 0)
+                                    {
+                                        Array.Copy(rxBuf, validMbOffset, rxBuf, 0, rxLen - validMbOffset);
+                                        rxLen -= validMbOffset;
+                                    }
+                                    ready = true;
+                                }
+                                else if (swIdle.ElapsedMilliseconds >= 25)
+                                {
+                                    ready = true;
+                                }
                             }
 
                             if (ready)

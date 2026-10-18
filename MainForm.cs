@@ -618,6 +618,7 @@ namespace BMS_Protocol_Simulator
         private Button btnScanPacks;
         private ComboBox cboPollInterval;
         private Button btnPollPause;
+        private Button btnSinglePoll;
         private Panel pnlCombo;
         private Label lblHint;
         private Button btnGear;
@@ -883,6 +884,13 @@ namespace BMS_Protocol_Simulator
                 lblStatusText.Text = _comm.IsPollingPaused ? "⏸ 轮询已暂停" : "▶ 轮询已恢复运行";
             };
             flpTopRow2.Controls.Add(btnPollPause);
+
+            btnSinglePoll = new Button { Text = "⏭ 单步轮询", Width = 85, Height = 25, Margin = new Padding(2, 2, 6, 0), Visible = false };
+            btnSinglePoll.Click += delegate(object s, EventArgs e) {
+                if (!_comm.IsOpen) { MessageBox.Show("请先打开串口再执行单步轮询！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                _comm.TriggerSinglePoll();
+            };
+            flpTopRow2.Controls.Add(btnSinglePoll);
 
             tlpTop.Controls.Add(flpTopRow2, 0, 1);
 
@@ -1560,6 +1568,12 @@ namespace BMS_Protocol_Simulator
 
         private void CommitSingleControl(NumericUpDown num)
         {
+            if (_comm != null && _comm.CurrentWorkMode == WorkMode.MasterPoller)
+            {
+                RollbackNumeric(num);
+                return;
+            }
+
             TextBox tb = GetInnerTextBox(num);
             if (tb != null)
             {
@@ -1747,6 +1761,12 @@ namespace BMS_Protocol_Simulator
         {
             if (e.Control && e.KeyCode == Keys.S)
             {
+                if (_comm != null && _comm.CurrentWorkMode == WorkMode.MasterPoller)
+                {
+                    e.Handled = true;
+                    e.SuppressKeyPress = true;
+                    return;
+                }
                 if (_currentFocusedControl != null)
                 {
                     CommitSingleControl(_currentFocusedControl);
@@ -1788,8 +1808,8 @@ namespace BMS_Protocol_Simulator
                 {
                     lock (_model.SyncRoot)
                     {
-                        bool canCharge = _model.StatusChargeEnable && !_model.ProtOverVolt && !_model.ProtHighTemp && !_model.ProtSystemFault;
-                        bool canDischarge = _model.StatusDischargeEnable && !_model.ProtUnderVolt && !_model.ProtUnderTemp && !_model.ProtSystemFault;
+                        bool canCharge = _model.CanCharge;
+                        bool canDischarge = _model.CanDischarge;
 
                         _isUpdatingUi = true;
                         if (!canCharge)
@@ -2011,12 +2031,18 @@ namespace BMS_Protocol_Simulator
 
             chkProtOc = new CheckBox(); chkProtOc.Text = "过流保护"; chkProtOc.AutoSize = true; chkProtOc.Margin = new Padding(6);
             chkProtOc.CheckedChanged += delegate(object s, EventArgs e) {
-                if (!_isUpdatingUi) { lock (_model.SyncRoot) { _model.ProtOverCurrent = chkProtOc.Checked; } }
+                if (!_isUpdatingUi) {
+                    lock (_model.SyncRoot) { _model.ProtOverCurrent = chkProtOc.Checked; }
+                    refreshChargeDischargeLimits();
+                }
             };
 
             chkProtSc = new CheckBox(); chkProtSc.Text = "输出短路保护"; chkProtSc.AutoSize = true; chkProtSc.Margin = new Padding(6);
             chkProtSc.CheckedChanged += delegate(object s, EventArgs e) {
-                if (!_isUpdatingUi) { lock (_model.SyncRoot) { _model.ProtShortCircuit = chkProtSc.Checked; } }
+                if (!_isUpdatingUi) {
+                    lock (_model.SyncRoot) { _model.ProtShortCircuit = chkProtSc.Checked; }
+                    refreshChargeDischargeLimits();
+                }
             };
 
             chkProtHt = new CheckBox(); chkProtHt.Text = "电芯过温保护"; chkProtHt.AutoSize = true; chkProtHt.Margin = new Padding(6);
@@ -2047,6 +2073,7 @@ namespace BMS_Protocol_Simulator
             chkProtSoftStart.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
                     lock (_model.SyncRoot) { _model.ProtSoftStart = chkProtSoftStart.Checked; }
+                    refreshChargeDischargeLimits();
                     if (chkProtSoftStart.Checked && cboProtocol != null)
                     {
                         if (cboProtocol.SelectedIndex == 3) // 3: Pylontech
@@ -2184,6 +2211,7 @@ namespace BMS_Protocol_Simulator
                 if (lblPollInterval != null) lblPollInterval.Visible = true;
                 cboPollInterval.Visible = true;
                 btnPollPause.Visible = true;
+                if (btnSinglePoll != null) btnSinglePoll.Visible = true;
 
                 if (pnlCombo != null) pnlCombo.Visible = false;
                 if (chkAutoAdapt != null) chkAutoAdapt.Visible = false;
@@ -2214,6 +2242,7 @@ namespace BMS_Protocol_Simulator
                 if (lblPollInterval != null) lblPollInterval.Visible = false;
                 cboPollInterval.Visible = false;
                 btnPollPause.Visible = false;
+                if (btnSinglePoll != null) btnSinglePoll.Visible = false;
 
                 if (pnlCombo != null) pnlCombo.Visible = true;
                 if (chkAutoAdapt != null) chkAutoAdapt.Visible = true;
@@ -2233,6 +2262,35 @@ namespace BMS_Protocol_Simulator
                     lblStatusText.Text = "✓ 已进入 [从机模拟模式] (作为BMS电池包响应逆变器)";
                 }
             }
+
+            // 主机模式下将模拟量与标志位设为只读防误触，从机模式下恢复可编辑
+            NumericUpDown[] allNums = new NumericUpDown[] {
+                numVoltage, numCurrent, numTemp, numSoc, numSoh,
+                numRemCap, numFullCap, numMaxChgI, numMaxDisI, numCvVolt, numCutoffVolt, numCycleCount
+            };
+            for (int i = 0; i < allNums.Length; i++)
+            {
+                if (allNums[i] != null)
+                {
+                    allNums[i].ReadOnly = isMaster;
+                    if (allNums[i].Controls.Count > 0) allNums[i].Controls[0].Enabled = !isMaster;
+                }
+            }
+
+            CheckBox[] allChks = new CheckBox[] {
+                chkChgEn, chkDisEn, chkForceChg, chkFullChg, chkBalance, chkSleep,
+                chkWarnSingleOv, chkWarnSingleUv, chkWarnGlobalOv, chkWarnGlobalUv,
+                chkWarnOc, chkWarnHt, chkWarnLt, chkWarnVoltDiff, chkWarnLowCap,
+                chkProtOv, chkProtUv, chkProtOc, chkProtSc, chkProtHt, chkProtLt, chkProtSys, chkProtSoftStart
+            };
+            for (int i = 0; i < allChks.Length; i++)
+            {
+                if (allChks[i] != null)
+                {
+                    allChks[i].AutoCheck = !isMaster;
+                }
+            }
+
             UpdateProtocolBadge();
             UpdateModelMatchBanner();
         }
@@ -2324,20 +2382,23 @@ namespace BMS_Protocol_Simulator
 
         private void CboProtocol_SelectedIndexChanged(object sender, EventArgs e)
         {
-            switch (cboProtocol.SelectedIndex)
+            if (!_isUpdatingUi)
             {
-                case 0:
-                    _comm.ProtocolHandler = new CvteModbusHandler();
-                    break;
-                case 1:
-                    _comm.ProtocolHandler = new GrowattModbusHandler();
-                    break;
-                case 2:
-                    _comm.ProtocolHandler = new VoltronicModbusHandler();
-                    break;
-                case 3:
-                    _comm.ProtocolHandler = new PylontechAsciiHandler();
-                    break;
+                switch (cboProtocol.SelectedIndex)
+                {
+                    case 0:
+                        _comm.ProtocolHandler = new CvteModbusHandler();
+                        break;
+                    case 1:
+                        _comm.ProtocolHandler = new GrowattModbusHandler();
+                        break;
+                    case 2:
+                        _comm.ProtocolHandler = new VoltronicModbusHandler();
+                        break;
+                    case 3:
+                        _comm.ProtocolHandler = new PylontechAsciiHandler();
+                        break;
+                }
             }
             UpdateProtocolBadge();
             UpdateModelMatchBanner();
@@ -2595,9 +2656,10 @@ namespace BMS_Protocol_Simulator
                     }
                 }
 
-                // 若识别出机型，同步套系
+                // 若识别出机型，同步 UI 套系显示 (后台线程已在首帧回复前同步完成 Model 套系更新)
                 if (e.Model != InverterModel.Unknown)
                 {
+                    _defaultConfig = BmsDefaultConfig.Load();
                     string targetModelName = e.Model == InverterModel.INV_3KU ? "3KU" : "6KU";
                     if (_defaultConfig.ActiveProfileName != targetModelName)
                     {
@@ -2607,11 +2669,12 @@ namespace BMS_Protocol_Simulator
                             _model.ApplyDefaultConfig(_defaultConfig.Profile6KU);
                         else
                             _model.ApplyDefaultConfig(_defaultConfig.Profile3KU);
-                        SyncModelToUI();
-                        CommitAllControls();
                     }
+                    SyncModelToUI();
+                    CommitAllControls();
                 }
 
+                UpdateProtocolBadge();
                 UpdateModelMatchBanner();
                 lblStatusText.Text = string.Format("🔄 智能自适应生效：已自动匹配为 [{0}] {1}", e.Model != InverterModel.Unknown ? (e.Model == InverterModel.INV_3KU ? "3KU" : "6KU") : "自动", targetProtName);
             }));
@@ -2622,6 +2685,9 @@ namespace BMS_Protocol_Simulator
             _isUpdatingUi = true;
             lock (_model.SyncRoot)
             {
+                if (_model.MaxChargeCurrent > 0) _userConfiguredMaxChgI = _model.MaxChargeCurrent;
+                if (_model.MaxDischargeCurrent > 0) _userConfiguredMaxDisI = _model.MaxDischargeCurrent;
+
                 UpdateNumericCommitted(numVoltage, (decimal)_model.Voltage);
                 UpdateNumericCommitted(numCurrent, (decimal)_model.Current);
                 UpdateNumericCommitted(numTemp, (decimal)_model.Temperature);

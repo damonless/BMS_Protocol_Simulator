@@ -53,7 +53,7 @@ namespace BMS_Protocol_Simulator
 
         public static bool Verify(byte[] fullFrame)
         {
-            if (fullFrame.Length < 10) return false;
+            if (fullFrame == null || fullFrame.Length < 18) return false;
             if (fullFrame[0] != (byte)'~' || fullFrame[fullFrame.Length - 1] != 0x0D) return false;
 
             string recvHex = Encoding.ASCII.GetString(fullFrame, fullFrame.Length - 5, 4);
@@ -109,9 +109,9 @@ namespace BMS_Protocol_Simulator
             // CVTE 协议合法寄存器起始地址范围过滤 (防止误响应 Voltronic 0x0030/0x0060/0x0070 或 Growatt 0x0001 len 35 / 0x0014 len 15，使逆变器产生 56 通信丢失告警):
             bool isValidCvteAddr = (regStart >= 0x0011 && regStart <= 0x0013 && regCount <= 3) ||
                                    (regStart >= 0x001C && regStart <= 0x001F && regCount <= 4) ||
-                                   (regStart >= 0x0020 && regStart <= 0x002F && regCount <= 16) ||
+                                   (regStart >= 0x0020 && regStart <= 0x0036 && regStart != 0x0030 && regCount <= 23) ||
                                    (regStart >= 0x0040 && regStart <= 0x005A && regCount <= 27) ||
-                                   (regStart >= 0x0065 && regStart <= 0x006E && regCount <= 10);
+                                   (regStart >= 0x0060 && regStart <= 0x006E && regCount <= 15 && !(regStart == 0x0060 && regCount == 10));
             if (!isValidCvteAddr)
                 return false;
 
@@ -142,7 +142,7 @@ namespace BMS_Protocol_Simulator
                 if (model.HasWarning) statusTag += string.Format(" [告警提示: {0}]", model.GetActiveWarningsSummary());
 
                 decodedInfo = string.Format("[CVTE] 应答 ID:{0:X2} 读 0x{1:X4} ({2}寄存器) -> 电压:{3:F2}V, 电流:{4:F2}A, SOC:{5:F0}%, 容量:{6:F1}/{7:F1}Ah, CV:{8:F2}V, 限流:{9:F1}A{10}",
-                    id, regStart, regCount, model.Voltage, model.Current, model.SOC, model.RemainingCapacity, model.FullCapacity, model.CVVoltage, model.MaxChargeCurrent, statusTag);
+                    id, regStart, regCount, model.Voltage, model.Current, model.SOC, model.RemainingCapacity, model.FullCapacity, model.CVVoltage, model.CanCharge ? model.MaxChargeCurrent : 0.0, statusTag);
             }
 
 
@@ -186,16 +186,14 @@ namespace BMS_Protocol_Simulator
                     else if (model.Current < -0.05) mode |= 0x0003; // 11: 放电
                     else mode |= 0x0001;                            // 01: 待机
 
-                    if (model.ProtOverVolt || model.ProtUnderVolt || model.ProtOverCurrent ||
-                        model.ProtShortCircuit || model.ProtHighTemp || model.ProtUnderTemp ||
-                        model.ProtSystemFault || model.ProtSoftStart)
+                    if (model.HasProtection)
                     {
                         mode |= (1 << 2); // Bit 2: 错误位有效标志
                     }
                     if (model.StatusBalancing) mode |= (1 << 3);      // Bit 3: 电芯均衡中
                     if (model.StatusSleep) mode |= (1 << 4);          // Bit 4: 休眠状态
-                    if (model.StatusDischargeEnable) mode |= (1 << 5);// Bit 5: 放电输出开启
-                    if (model.StatusChargeEnable) mode |= (1 << 6);   // Bit 6: 充电输入开启
+                    if (model.CanDischarge) mode |= (1 << 5);         // Bit 5: 放电输出开启
+                    if (model.CanCharge) mode |= (1 << 6);            // Bit 6: 充电输入开启
                     // Bit 7: 0为端子连接
                     // Bit 8~9: 00为单机
                     if (model.StatusForceCharge) mode |= (1 << 12);   // Bit 12: 强制充电请求
@@ -246,7 +244,7 @@ namespace BMS_Protocol_Simulator
                     return warn;
 
                 case 0x0029: // 最大充电电流 (10mA, PDF Page 7)
-                    if (!model.StatusChargeEnable || model.ProtOverVolt || model.ProtHighTemp || model.ProtSystemFault)
+                    if (!model.CanCharge)
                         return 0;
                     return (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(model.MaxChargeCurrent * 100)));
 
@@ -280,19 +278,28 @@ namespace BMS_Protocol_Simulator
                     return 20;
 
                 case 0x0033: // 单芯最高温度 (℃, PDF Page 8)
-                    return (ushort)Math.Round(model.Temperature);
+                    return (ushort)((short)Math.Round(model.Temperature));
 
                 case 0x0034: // 单芯最高温度位号
                     return 1;
 
                 case 0x0035: // 单芯最低温度 (℃, PDF Page 8)
-                    return (ushort)Math.Round(model.Temperature - 1);
+                    return (ushort)((short)Math.Round(model.Temperature - 1));
 
                 case 0x0036: // 单芯最低温度位号
                     return 2;
 
                 case 0x0040: // 电池串数 (动态适配 6KU 16串 / 3KU 8串, PDF Page 10)
                     return (ushort)(model.Voltage > 35.0 ? 16 : 8);
+
+                case 0x0060: // 环境温度 (℃, PDF Page 11)
+                case 0x0061: // MOS 1 温度 (℃, PDF Page 11)
+                case 0x0062: // MOS 2 温度 (℃, PDF Page 11)
+                case 0x0063: // MOS 3 温度 (℃, PDF Page 11)
+                    return (ushort)((short)Math.Round(model.Temperature));
+
+                case 0x0064: // 电芯 NTC 个数 (个, PDF Page 11)
+                    return 4;
 
                 default:
                     // 默认按 16 串 (6KU) 或 8 串 (3KU) 电芯电压填充 0x0041~0x005A
@@ -308,7 +315,7 @@ namespace BMS_Protocol_Simulator
                     // 默认多 NTC 温度填充 0x0065~0x006E
                     if (regAddress >= 0x0065 && regAddress <= 0x006E)
                     {
-                        return (ushort)Math.Round(model.Temperature);
+                        return (ushort)((short)Math.Round(model.Temperature));
                     }
                     return 0x0000;
             }
@@ -492,8 +499,8 @@ namespace BMS_Protocol_Simulator
                 return false;
 
             // Growatt 协议合法寄存器起始地址范围过滤 (严格限定古瑞瓦特协议定义的轮询分段，防止误响应 Voltronic 0x0030/0x0060/0x0070 或 CVTE 0x0020 len 12，使逆变器产生 56 通信丢失告警):
-            bool isValidGrowattAddr = (regStart == 0x0001 && regCount <= 35) ||
-                                      (regStart >= 0x0010 && regStart <= 0x0014 && regCount <= 20) ||
+            bool isValidGrowattAddr = (regStart == 0x0001 && regCount <= 45) ||
+                                      (regStart >= 0x0010 && regStart <= 0x0014 && regCount <= 26) ||
                                       (regStart >= 0x0015 && regStart <= 0x0029 && regCount <= 2) ||
                                       (regStart == 0x0071 && regCount <= 16);
             if (!isValidGrowattAddr)
@@ -501,7 +508,10 @@ namespace BMS_Protocol_Simulator
 
 
             if (!replyAllIds && id != specificId)
+            {
+                decodedInfo = string.Format("收到对 ID:{0:X2} 的查询 (已按单包规则忽略)", id);
                 return false;
+            }
 
             int byteCount = regCount * 2;
             byte[] resp = new byte[3 + byteCount + 2];
@@ -524,7 +534,7 @@ namespace BMS_Protocol_Simulator
                 if (model.HasWarning) statusTag += string.Format(" [告警提示: {0}]", model.GetActiveWarningsSummary());
 
                 decodedInfo = string.Format("[GROWATT] 应答 ID:{0:X2} 读 0x{1:X4} ({2}寄存器) -> 电压:{3:F2}V, SOC:{4:F0}%, 电流:{5:F2}A, 温度:{6:F1}°C, CV:{7:F2}V, 限流:{8:F1}A{9}",
-                    id, regStart, regCount, model.Voltage, model.SOC, model.Current, model.Temperature, model.CVVoltage, model.MaxChargeCurrent, statusTag);
+                    id, regStart, regCount, model.Voltage, model.SOC, model.Current, model.Temperature, model.CVVoltage, model.CanCharge ? model.MaxChargeCurrent : 0.0, statusTag);
             }
 
             ushort crc = ModbusCrc.Calculate(resp, 3 + byteCount);
@@ -576,10 +586,8 @@ namespace BMS_Protocol_Simulator
                     if (model.StatusBalancing) status |= (1 << 3);      // Bit 3: Cell balance PF status
                     if (model.StatusSleep) status |= (1 << 4);          // Bit 4: Sleep status
 
-                    bool canGwDis = model.StatusDischargeEnable && !model.ProtUnderVolt && !model.ProtUnderTemp && !model.ProtSystemFault;
-                    bool canGwChg = model.StatusChargeEnable && !model.ProtOverVolt && !model.ProtHighTemp && !model.ProtSystemFault;
-                    if (canGwDis) status |= (1 << 5);// Bit 5: Output Discharge status
-                    if (canGwChg) status |= (1 << 6);// Bit 6: Output Charge status
+                    if (model.CanDischarge) status |= (1 << 5);// Bit 5: Output Discharge status
+                    if (model.CanCharge) status |= (1 << 6);// Bit 6: Output Charge status
 
                     if (model.StatusForceCharge) status |= (1 << 12);   // Bit 12: Request force charge
                     return status;
@@ -612,7 +620,7 @@ namespace BMS_Protocol_Simulator
                     return (ushort)sTemp;
 
                 case 0x0019: // Max Charge Current (10mA, PDF Page 8)
-                    if (!model.StatusChargeEnable || model.ProtOverVolt || model.ProtHighTemp || model.ProtSystemFault)
+                    if (!model.CanCharge)
                         return 0;
                     return (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(model.MaxChargeCurrent * 100)));
 
@@ -656,7 +664,7 @@ namespace BMS_Protocol_Simulator
 
 
                 case 0x0023: // Max Discharge Current (10mA, 正值, PDF Page 9)
-                    if (!model.StatusDischargeEnable || model.ProtUnderVolt || model.ProtUnderTemp || model.ProtSystemFault)
+                    if (!model.CanDischarge)
                         return 0;
                     return (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(model.MaxDischargeCurrent * 100)));
 
@@ -925,7 +933,10 @@ namespace BMS_Protocol_Simulator
             bool isValidVoltronicAddr = (regStart == 0x0030 && regCount <= 6) ||
                                         (regStart == 0x0060 && regCount <= 10) ||
                                         (regStart == 0x0070 && regCount <= 5) ||
+                                        (regStart == 0x0025 && regCount <= 11) ||
                                         (regStart == 0x0026 && regCount <= 10) ||
+                                        (regStart == 0x0040 && regCount <= 11) ||
+                                        (regStart == 0x0050 && regCount <= 6) ||
                                         (regStart == 0x0001 && regCount <= 2) ||
                                         (regStart == 0x0010 && regCount == 1) ||
                                         (regStart == 0x0011 && regCount <= 16);
@@ -933,7 +944,11 @@ namespace BMS_Protocol_Simulator
                 return false;
 
 
-            if (!replyAllIds && id != specificId) return false;
+            if (!replyAllIds && id != specificId)
+            {
+                decodedInfo = string.Format("收到对 ID:{0:X2} 的查询 (已按单包规则忽略)", id);
+                return false;
+            }
 
             // 日月元 (Voltronic) 485 协议响应帧规范:
             // [ID (1B)][CMD 0x03 (1B)][Data Length Hi (1B)][Data Length Lo (1B)][Data 0 Hi][Data 0 Lo]...[CRC Hi][CRC Lo]
@@ -960,7 +975,7 @@ namespace BMS_Protocol_Simulator
                 if (model.HasWarning) statusTag += string.Format(" [告警提示: {0}]", model.GetActiveWarningsSummary());
 
                 decodedInfo = string.Format("[VOLTRONIC] 应答 ID:{0:X2} 读 0x{1:X4} ({2}寄存器) -> 电压:{3:F2}V, SOC:{4:F0}%, 电流:{5:F2}A, CV:{6:F2}V, 截止:{7:F2}V, 充限:{8:F1}A, 放限:{9:F1}A{10}",
-                    id, regStart, regCount, model.Voltage, model.SOC, model.Current, model.CVVoltage, model.CutoffVoltage, model.MaxChargeCurrent, model.MaxDischargeCurrent, statusTag);
+                    id, regStart, regCount, model.Voltage, model.SOC, model.Current, model.CVVoltage, model.CutoffVoltage, model.CanCharge ? model.MaxChargeCurrent : 0.0, model.CanDischarge ? model.MaxDischargeCurrent : 0.0, statusTag);
             }
 
             ushort crc = ModbusCrc.Calculate(resp, 4 + byteCount);
@@ -975,10 +990,13 @@ namespace BMS_Protocol_Simulator
         {
             switch (regAddress)
             {
-                // ── 1. 版本与电芯总数 (0x0001~0x0010, PDF Page 3-4) ──
+                // ── 1. 版本与电芯/温度总数 (0x0001~0x0025, PDF Page 3-4) ──
                 case 0x0001: return 0x0001; // Protocol Type
                 case 0x0002: return 0x0001; // Protocol Version
                 case 0x0010: return (ushort)(model.Voltage > 35.0 ? 16 : 8); // Number of cell: L pcs
+                case 0x0025: return 4;      // Number of temperature sensor: M pcs (PDF Page 4)
+                case 0x0040: return (ushort)(model.Voltage > 35.0 ? 16 : 8); // Number of cell: L (PDF Page 5)
+                case 0x0050: return 4;      // Number of temperature sensor: M (PDF Page 5)
 
                 // ── 2. 模拟量状态查询组 (0x0030~0x0035, PDF Page 4) ──
                 case 0x0030: // Module charge current (0.1A)
@@ -1018,7 +1036,7 @@ namespace BMS_Protocol_Simulator
                     return (ushort)((model.WarnOverCurrent || model.ProtOverCurrent) ? 0x0002 : 0x0000);
 
                 case 0x0065: // Module discharge current state (02H: discharge overcurrent)
-                    return (ushort)((model.WarnOverCurrent || model.ProtOverCurrent) ? 0x0002 : 0x0000);
+                    return (ushort)((model.WarnOverCurrent || model.ProtOverCurrent || model.ProtShortCircuit) ? 0x0002 : 0x0000);
 
                 case 0x0066: // Module charge temperature state (01H: low temp, 02H: high temp)
                     if (model.WarnLowTemp || model.ProtUnderTemp) return 0x0001;
@@ -1030,10 +1048,12 @@ namespace BMS_Protocol_Simulator
                     if (model.WarnHighTemp || model.ProtHighTemp) return 0x0002;
                     return 0x0000;
 
-                case 0x0068: // Cell charge temperature state (02H: high temp)
+                case 0x0068: // Cell charge temperature state (01H: low temp, 02H: high temp)
+                    if (model.WarnLowTemp || model.ProtUnderTemp) return 0x0001;
                     return (ushort)((model.WarnHighTemp || model.ProtHighTemp) ? 0x0002 : 0x0000);
 
-                case 0x0069: // Cell discharge temperature state (02H: high temp)
+                case 0x0069: // Cell discharge temperature state (01H: low temp, 02H: high temp)
+                    if (model.WarnLowTemp || model.ProtUnderTemp) return 0x0001;
                     return (ushort)((model.WarnHighTemp || model.ProtHighTemp) ? 0x0002 : 0x0000);
 
                 // ── 4. 充放电控制参数组 (0x0070~0x0074, PDF Page 5-6) ──
@@ -1044,27 +1064,25 @@ namespace BMS_Protocol_Simulator
                     return (ushort)Math.Max(0, (int)Math.Round(model.CutoffVoltage * 10));
 
                 case 0x0072: // Charge current limit (0.1A, PDF Page 5)
-                    if (!model.StatusChargeEnable || model.ProtOverVolt || model.ProtHighTemp || model.ProtSystemFault)
+                    if (!model.CanCharge)
                         return 0;
                     return (ushort)Math.Max(0, (int)Math.Round(model.MaxChargeCurrent * 10));
 
                 case 0x0073: // Discharge current limit (0.1A, PDF Page 5)
-                    if (!model.StatusDischargeEnable || model.ProtUnderVolt || model.ProtUnderTemp || model.ProtSystemFault)
+                    if (!model.CanDischarge)
                         return 0;
                     return (ushort)Math.Max(0, (int)Math.Round(model.MaxDischargeCurrent * 10));
 
                 case 0x0074: // Charge, discharge status (PDF Page 5-6)
                     ushort vStatus = 0;
-                    bool canVChg = model.StatusChargeEnable && !model.ProtOverVolt && !model.ProtHighTemp && !model.ProtSystemFault;
-                    bool canVDis = model.StatusDischargeEnable && !model.ProtUnderVolt && !model.ProtUnderTemp && !model.ProtSystemFault;
-                    if (canVChg) vStatus |= (1 << 7);    // Bit 7: Charge enable (1: yes, 0: request stop charge)
-                    if (canVDis) vStatus |= (1 << 6);    // Bit 6: Discharge enable (1: yes, 0: request stop discharge)
-                    if (model.StatusForceCharge) vStatus |= (1 << 5);     // Bit 5: Charge immediately (强制充电请求)
-                    if (model.StatusFullCharge) vStatus |= (1 << 3);      // Bit 3: Full charge request (满充请求)
+                    if (model.CanCharge) vStatus |= (1 << 7);        // Bit 7: Charge enable (1: yes, 0: request stop charge)
+                    if (model.CanDischarge) vStatus |= (1 << 6);     // Bit 6: Discharge enable (1: yes, 0: request stop discharge)
+                    if (model.StatusForceCharge) vStatus |= (1 << 5);// Bit 5: Charge immediately (强制充电请求)
+                    if (model.StatusFullCharge) vStatus |= (1 << 3); // Bit 3: Full charge request (满充请求)
                     return vStatus;
 
 
-                // ── 5. 温度传感器组 (0x0026~0x002F, 0.1K 开尔文温度, PDF Page 4) ──
+                // ── 5. 温度传感器组 (0x0026~0x002F, 0.1K 开尔文温度, PDF Page 4) 与电芯状态 ──
                 default:
                     if (regAddress >= 0x0026 && regAddress <= 0x002F)
                     {
@@ -1079,6 +1097,20 @@ namespace BMS_Protocol_Simulator
                         {
                             return (ushort)Math.Round((model.Voltage / nCells) * 10); // 0.1V
                         }
+                    }
+                    if (regAddress >= 0x0041 && regAddress <= 0x004A)
+                    {
+                        byte cState = 0x00;
+                        if (model.WarnSingleOverVolt || model.ProtOverVolt) cState = 0x02;
+                        else if (model.WarnSingleUnderVolt || model.ProtUnderVolt) cState = 0x01;
+                        return (ushort)((cState << 8) | cState);
+                    }
+                    if (regAddress >= 0x0051 && regAddress <= 0x0055)
+                    {
+                        byte tState = 0x00;
+                        if (model.WarnHighTemp || model.ProtHighTemp) tState = 0x02;
+                        else if (model.WarnLowTemp || model.ProtUnderTemp) tState = 0x01;
+                        return (ushort)((tState << 8) | tState);
                     }
                     return 0x0000;
             }
@@ -1227,14 +1259,16 @@ namespace BMS_Protocol_Simulator
                     ushort s5 = (ushort)((rxBuffer[dataOffset + 10] << 8) | rxBuffer[dataOffset + 11]); // 0x0065 放电过流
                     ushort s6 = (ushort)((rxBuffer[dataOffset + 12] << 8) | rxBuffer[dataOffset + 13]); // 0x0066 充电温度
                     ushort s7 = (ushort)((rxBuffer[dataOffset + 14] << 8) | rxBuffer[dataOffset + 15]); // 0x0067 放电温度
+                    ushort s8 = (ushort)((rxBuffer[dataOffset + 16] << 8) | rxBuffer[dataOffset + 17]); // 0x0068 单芯充电温度
+                    ushort s9 = (ushort)((rxBuffer[dataOffset + 18] << 8) | rxBuffer[dataOffset + 19]); // 0x0069 单芯放电温度
 
-                    model.WarnGlobalOverVolt = s0 == 0x02;
-                    model.WarnGlobalUnderVolt = s1 == 0x01;
-                    model.WarnSingleOverVolt = s2 == 0x02;
-                    model.WarnSingleUnderVolt = s3 == 0x01;
-                    model.WarnOverCurrent = (s4 == 0x02 || s5 == 0x02);
-                    model.WarnHighTemp = (s6 == 0x02 || s7 == 0x02);
-                    model.WarnLowTemp = (s6 == 0x01 || s7 == 0x01);
+                    model.WarnGlobalOverVolt = (s0 == 0x02 || s0 == 0xF0);
+                    model.WarnGlobalUnderVolt = (s1 == 0x01 || s1 == 0xF0);
+                    model.WarnSingleOverVolt = (s2 == 0x02 || s2 == 0xF0);
+                    model.WarnSingleUnderVolt = (s3 == 0x01 || s3 == 0xF0);
+                    model.WarnOverCurrent = (s4 == 0x02 || s5 == 0x02 || s4 == 0xF0 || s5 == 0xF0);
+                    model.WarnHighTemp = (s6 == 0x02 || s7 == 0x02 || s8 == 0x02 || s9 == 0x02);
+                    model.WarnLowTemp = (s6 == 0x01 || s7 == 0x01 || s8 == 0x01 || s9 == 0x01);
 
                     decodedInfo = string.Format("[VOLTRONIC] 告警矩阵遥测更新完成 (过压={0}, 欠压={1}, 过流={2}, 温态={3})",
                         s0, s1, s4, s6);
@@ -1283,17 +1317,27 @@ namespace BMS_Protocol_Simulator
             txResponse = null;
             decodedInfo = "";
 
-            if (rxLength < 10) return false;
+            if (rxLength < 18) return false;
             if (rxBuffer[0] != (byte)'~' || rxBuffer[rxLength - 1] != 0x0D) return false;
 
+            byte[] frameSlice = rxBuffer;
+            if (rxBuffer.Length != rxLength)
+            {
+                frameSlice = new byte[rxLength];
+                Array.Copy(rxBuffer, 0, frameSlice, 0, rxLength);
+            }
+            if (!PylonChecksum.Verify(frameSlice)) return false;
+
             string asciiStr = Encoding.ASCII.GetString(rxBuffer, 0, rxLength);
-            if (asciiStr.Length < 10) return false;
+            if (asciiStr.Length < 18) return false;
 
             // 提取协议字段: ~ VER(2) ADR(2) CID1(2) CID2(2) LENGTH(4) [INFO] CHKSUM(4) \r
             string ver = asciiStr.Substring(1, 2);
             string adrStr = asciiStr.Substring(3, 2);
-            string cid1 = asciiStr.Substring(5, 2);
+            string cid1 = asciiStr.Substring(5, 2).ToUpper();
             string cid2 = asciiStr.Substring(7, 2).ToUpper();
+
+            if (cid1 != "46") return false;
 
             byte adrVal = 0;
             byte.TryParse(adrStr, System.Globalization.NumberStyles.HexNumber, null, out adrVal);
@@ -1443,11 +1487,11 @@ namespace BMS_Protocol_Simulator
                     ushort uCvMv = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.CVVoltage * 1000)));
                     // 2. 放电电压建议下限 (mV, Accuracy 3, 支持 6KU/3KU 标准对齐)
                     ushort uCutoffMv = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.CutoffVoltage * 1000)));
-                    // 3. 最大充电电流 (10mA / 0.01A: 当禁止充电或处于过压/高温/故障保护时强制输出 0A)
-                    bool canCharge = model.StatusChargeEnable && !model.ProtOverVolt && !model.ProtHighTemp && !model.ProtSystemFault;
+                    // 3. 最大充电电流 (10mA / 0.01A: 当禁止充电或处于任何保护时强制输出 0A)
+                    bool canCharge = model.CanCharge;
                     ushort uMaxChg = (ushort)(canCharge ? Math.Max(0, Math.Min(65535, Math.Round(model.MaxChargeCurrent * 100))) : 0);
-                    // 4. 最大放电电流 (10mA: 当禁止放电或处于欠压/低温/故障保护时强制输出 0A)
-                    bool canDischarge = model.StatusDischargeEnable && !model.ProtUnderVolt && !model.ProtUnderTemp && !model.ProtSystemFault;
+                    // 4. 最大放电电流 (10mA: 当禁止放电或处于任何保护时强制输出 0A)
+                    bool canDischarge = model.CanDischarge;
                     ushort uMaxDis = (ushort)(canDischarge ? Math.Max(0, Math.Min(65535, Math.Round(model.MaxDischargeCurrent * 100))) : 0);
 
                     // 5. 充放电状态字 (1 字节):
@@ -2005,6 +2049,7 @@ namespace BMS_Protocol_Simulator
         private InverterModel _latchedModel = InverterModel.Unknown;
         private byte _latchedSlaveId = 0;
         private DateTime _lastDetectedTime = DateTime.MinValue;
+        private DateTime _lastPylon60Time = DateTime.MinValue;
 
         public DetectedProtocolType LatchedProtocol { get { return _latchedProtocol; } }
         public InverterModel LatchedModel { get { return _latchedModel; } }
@@ -2017,6 +2062,7 @@ namespace BMS_Protocol_Simulator
             _latchedModel = InverterModel.Unknown;
             _latchedSlaveId = 0;
             _lastDetectedTime = DateTime.MinValue;
+            _lastPylon60Time = DateTime.MinValue;
         }
 
         public DetectionResult InspectFrame(byte[] buffer, int offset, int length)
@@ -2167,13 +2213,22 @@ namespace BMS_Protocol_Simulator
                         if (cid2 == "60")
                         {
                             // 6KU 专属请求: CID2 60H (协议版本查询)
+                            _lastPylon60Time = res.Timestamp;
                             res.Model = InverterModel.INV_6KU;
                             res.IsSignatureConfirmed = true;
                         }
                         else if (cid2 == "61" || cid2 == "62" || cid2 == "63")
                         {
-                            res.Model = _latchedModel != InverterModel.Unknown ? _latchedModel : InverterModel.Unknown;
-                            res.IsSignatureConfirmed = (_latchedModel != InverterModel.Unknown);
+                            if (_lastPylon60Time != DateTime.MinValue && (res.Timestamp - _lastPylon60Time).TotalSeconds < 15.0)
+                            {
+                                res.Model = InverterModel.INV_6KU;
+                                res.IsSignatureConfirmed = true;
+                            }
+                            else
+                            {
+                                res.Model = InverterModel.INV_3KU;
+                                res.IsSignatureConfirmed = true;
+                            }
                         }
 
                         _latchedProtocol = res.Protocol;

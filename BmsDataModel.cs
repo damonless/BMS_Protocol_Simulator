@@ -286,6 +286,24 @@ namespace BMS_Protocol_Simulator
             }
         }
 
+        public bool CanCharge
+        {
+            get
+            {
+                return StatusChargeEnable && !ProtOverVolt && !ProtOverCurrent && !ProtShortCircuit &&
+                       !ProtHighTemp && !ProtUnderTemp && !ProtSystemFault && !ProtSoftStart;
+            }
+        }
+
+        public bool CanDischarge
+        {
+            get
+            {
+                return StatusDischargeEnable && !ProtUnderVolt && !ProtOverCurrent && !ProtShortCircuit &&
+                       !ProtHighTemp && !ProtUnderTemp && !ProtSystemFault && !ProtSoftStart;
+            }
+        }
+
         public bool HasWarning
         {
             get
