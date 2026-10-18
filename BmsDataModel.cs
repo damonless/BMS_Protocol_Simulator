@@ -348,6 +348,45 @@ namespace BMS_Protocol_Simulator
         }
 
 
+        // ── 扩展仿真参数：单芯压差拉偏 (mV) ──
+        public int CellImbalanceMv { get; set; }       // 单体最高与最低电芯压差设定 (mV, 如 0 / 50 / 150 / 300)
+
+        public ushort GetCellMillivolts(int cellIndexZeroBased, int cellCount, out ushort maxCellMv, out ushort minCellMv)
+        {
+            if (cellCount <= 0) cellCount = (Voltage < 36.0) ? 8 : 16;
+            int avgMv = (int)Math.Round((Voltage * 1000.0) / cellCount);
+            int effDelta = CellImbalanceMv;
+            if (effDelta <= 0) effDelta = WarnVoltDiff ? 240 : 20; // 勾选压差告警时自动注入 240mV 极值压差，常态保持 20mV 自然微差
+            int half = effDelta / 2;
+            maxCellMv = (ushort)Math.Max(0, Math.Min(5000, avgMv + half));
+            minCellMv = (ushort)Math.Max(0, Math.Min(5000, avgMv - half));
+            if (cellIndexZeroBased == 0) return maxCellMv;
+            if (cellIndexZeroBased == 1 && cellCount >= 2) return minCellMv;
+            return (ushort)Math.Max(0, Math.Min(5000, avgMv));
+        }
+
+        public void ClearAllAlarmsAndProtections()
+        {
+            WarnSingleOverVolt = false;
+            WarnSingleUnderVolt = false;
+            WarnGlobalOverVolt = false;
+            WarnGlobalUnderVolt = false;
+            WarnOverCurrent = false;
+            WarnHighTemp = false;
+            WarnLowTemp = false;
+            WarnVoltDiff = false;
+            WarnLowCapacity = false;
+
+            ProtOverVolt = false;
+            ProtUnderVolt = false;
+            ProtOverCurrent = false;
+            ProtShortCircuit = false;
+            ProtHighTemp = false;
+            ProtUnderTemp = false;
+            ProtSystemFault = false;
+            ProtSoftStart = false;
+        }
+
         public BmsDataModel()
         {
             ApplyDefaultConfig(BmsDefaultConfig.Load().ActiveProfile);
@@ -379,24 +418,7 @@ namespace BMS_Protocol_Simulator
                 CutoffVoltage = profile.CutoffVoltage;
                 CycleCount = profile.CycleCount;
 
-                WarnSingleOverVolt = false;
-                WarnSingleUnderVolt = false;
-                WarnGlobalOverVolt = false;
-                WarnGlobalUnderVolt = false;
-                WarnOverCurrent = false;
-                WarnHighTemp = false;
-                WarnLowTemp = false;
-                WarnVoltDiff = false;
-                WarnLowCapacity = false;
-
-                ProtOverVolt = false;
-                ProtUnderVolt = false;
-                ProtOverCurrent = false;
-                ProtShortCircuit = false;
-                ProtHighTemp = false;
-                ProtUnderTemp = false;
-                ProtSystemFault = false;
-                ProtSoftStart = false;
+                ClearAllAlarmsAndProtections();
 
                 StatusChargeEnable = true;
                 StatusDischargeEnable = true;

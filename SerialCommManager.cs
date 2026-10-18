@@ -86,6 +86,11 @@ namespace BMS_Protocol_Simulator
         public bool AutoAdaptEnabled { get; set; }
         private InverterModel _lastAdaptedModel = InverterModel.Unknown;
 
+        // ── 从机模式：通信层故障注入参数 ──
+        public bool SimulateSilence { get; set; }
+        public bool SimulateCorruptChecksum { get; set; }
+        public int ExtraResponseDelayMs { get; set; }
+
         // ── 主机模式可控参数 ──
         public byte TargetSlaveId { get; set; }
         public int PollIntervalMs { get; set; }
@@ -128,6 +133,9 @@ namespace BMS_Protocol_Simulator
             ErrorCount = 0;
             Detector = new InverterDetector();
             AutoAdaptEnabled = false;
+            SimulateSilence = false;
+            SimulateCorruptChecksum = false;
+            ExtraResponseDelayMs = 0;
         }
 
         public bool Open(string portName, int baudRate, Parity parity = Parity.None, int dataBits = 8, StopBits stopBits = StopBits.One)
@@ -478,11 +486,35 @@ namespace BMS_Protocol_Simulator
 
                             if (processed)
                             {
-                                Thread.Sleep(5);
-                                lock (_portLock) { if (_port != null && _port.IsOpen) _port.Write(txResp, 0, txResp.Length); }
-                                swResp.Stop();
-                                TxCount++;
-                                if (OnLogEvent != null) OnLogEvent(this, new LogEventArgs(true, txResp, decodedInfo, swResp.ElapsedMilliseconds));
+                                if (SimulateSilence)
+                                {
+                                    swResp.Stop();
+                                    if (OnLogEvent != null)
+                                        OnLogEvent(this, new LogEventArgs(true, new byte[0], "[故障注入: 模拟断线静默，已抑制应答以测试逆变器失联保护]"));
+                                }
+                                else
+                                {
+                                    int delayMs = ExtraResponseDelayMs > 0 ? ExtraResponseDelayMs : 5;
+                                    Thread.Sleep(delayMs);
+
+                                    if (SimulateCorruptChecksum && txResp != null && txResp.Length >= 4)
+                                    {
+                                        if (txResp[0] == (byte)'~')
+                                        {
+                                            txResp[txResp.Length - 2] = (byte)(txResp[txResp.Length - 2] == (byte)'0' ? 'F' : '0');
+                                        }
+                                        else
+                                        {
+                                            txResp[txResp.Length - 1] ^= 0xFF;
+                                        }
+                                        decodedInfo = (decodedInfo ?? "") + " [故障注入: 校验码已故意破坏]";
+                                    }
+
+                                    lock (_portLock) { if (_port != null && _port.IsOpen) _port.Write(txResp, 0, txResp.Length); }
+                                    swResp.Stop();
+                                    TxCount++;
+                                    if (OnLogEvent != null) OnLogEvent(this, new LogEventArgs(true, txResp, decodedInfo, swResp.ElapsedMilliseconds));
+                                }
                             }
                             else
                             {

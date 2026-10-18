@@ -575,6 +575,103 @@ namespace BMS_Protocol_Simulator
         }
     }
 
+    // ── 报文深度解剖弹窗 (双击实时监视器任意报文行触发) ──
+    public class FrameInspectorDialog : Form
+    {
+        public FrameInspectorDialog(string reportText)
+        {
+            this.Text = "报文深度解剖器 (Frame Anatomy Inspector)";
+            this.Size = new Size(680, 480);
+            this.StartPosition = FormStartPosition.CenterParent;
+            this.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular);
+            this.MinimizeBox = false;
+
+            try
+            {
+                Icon icon = AppIconHelper.GetAppIcon();
+                if (icon != null) this.Icon = icon;
+            }
+            catch { }
+
+            RichTextBox rtb = new RichTextBox
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                BackColor = Color.FromArgb(15, 23, 42),
+                ForeColor = Color.FromArgb(226, 232, 240),
+                Font = new Font("Consolas", 9.5F, FontStyle.Regular),
+                WordWrap = false,
+                BorderStyle = BorderStyle.None,
+                Text = reportText ?? ""
+            };
+
+            Panel pnlBottom = new Panel { Dock = DockStyle.Bottom, Height = 42, BackColor = Color.FromArgb(241, 245, 249) };
+            Button btnCopy = new Button { Text = "📋 复制解剖报告", Width = 120, Height = 28, Location = new Point(16, 7) };
+            btnCopy.Click += delegate(object s, EventArgs e) {
+                try
+                {
+                    Clipboard.SetText(rtb.Text);
+                    btnCopy.Text = "✓ 已复制到剪贴板";
+                }
+                catch { }
+            };
+
+            Button btnClose = new Button { Text = "关闭", Width = 80, Height = 28, Location = new Point(570, 7), Anchor = AnchorStyles.Top | AnchorStyles.Right, DialogResult = DialogResult.OK };
+            pnlBottom.Controls.Add(btnCopy);
+            pnlBottom.Controls.Add(btnClose);
+
+            this.Controls.Add(rtb);
+            this.Controls.Add(pnlBottom);
+        }
+    }
+
+    // ── 主机模式写参数快捷输入对话框 ──
+    public class MasterParamInputDialog : Form
+    {
+        private NumericUpDown numInput;
+        public double ResultValue { get; private set; }
+
+        public MasterParamInputDialog(string title, string promptLabel, double initVal, double minVal, double maxVal, int decimals)
+        {
+            this.Text = title;
+            this.ClientSize = new Size(340, 125);
+            this.FormBorderStyle = FormBorderStyle.FixedDialog;
+            this.StartPosition = FormStartPosition.CenterParent;
+            this.MaximizeBox = false;
+            this.MinimizeBox = false;
+            this.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular);
+
+            try
+            {
+                Icon icon = AppIconHelper.GetAppIcon();
+                if (icon != null) this.Icon = icon;
+            }
+            catch { }
+
+            Label lbl = new Label { Text = promptLabel, AutoSize = true, Location = new Point(20, 24) };
+            numInput = new NumericUpDown
+            {
+                DecimalPlaces = decimals,
+                Minimum = (decimal)minVal,
+                Maximum = (decimal)maxVal,
+                Value = (decimal)Math.Max(minVal, Math.Min(maxVal, initVal)),
+                Increment = decimals == 2 ? 0.2M : 5M,
+                Width = 120,
+                Location = new Point(185, 21)
+            };
+
+            Button btnOk = new Button { Text = "立即下发", Width = 88, Height = 28, Location = new Point(75, 72), DialogResult = DialogResult.OK };
+            btnOk.Click += delegate(object s, EventArgs e) {
+                ResultValue = (double)numInput.Value;
+            };
+            Button btnCancel = new Button { Text = "取消", Width = 78, Height = 28, Location = new Point(180, 72), DialogResult = DialogResult.Cancel };
+
+            this.AcceptButton = btnOk;
+            this.CancelButton = btnCancel;
+            this.Controls.AddRange(new Control[] { lbl, numInput, btnOk, btnCancel });
+        }
+    }
+
     public class MainForm : Form
     {
         // ── Win32 API 锁定与双向防闪烁滚动 ──
@@ -615,13 +712,23 @@ namespace BMS_Protocol_Simulator
         // ── 主机与从机模式专属控制栏控件 ──
         private Label lblPollInterval;
         private Label lblSlaveHint;
+        private CheckBox chkSimSilence;
+        private CheckBox chkSimCrcErr;
+        private Label lblSimDelay;
+        private ComboBox cboSimDelay;
+        private Label lblCellDelta;
+        private ComboBox cboCellDelta;
         private Button btnScanPacks;
         private ComboBox cboPollInterval;
         private Button btnPollPause;
         private Button btnSinglePoll;
+        private Button btnMasterCtrl;
         private Panel pnlCombo;
         private Label lblHint;
         private Button btnGear;
+        private CheckBox chkDynamicSim;
+        private Timer _dynamicSimTimer;
+        private FlowLayoutPanel flpQuickPresets;
 
         // ── 模拟量控件 ──
         private NumericUpDown numVoltage, numCurrent, numTemp, numSoc, numSoh;
@@ -646,8 +753,11 @@ namespace BMS_Protocol_Simulator
         // ── 监视器控件 ──
         private RichTextBox rtbLog;
         private Label lblRxCount, lblTxCount, lblErrCount, lblLatency;
-        private CheckBox chkAutoScroll, chkShowTime, chkShowHex;
-        private Button btnClearLog, btnExportLog;
+        private CheckBox chkAutoScroll, chkShowTime, chkShowHex, chkFilterAlarmOnly;
+        private TextBox txtLogFilter;
+        private Button btnClearLog, btnExportLog, btnCsvRecord;
+        private string _csvRecordPath = null;
+        private readonly object _csvLock = new object();
 
         // ── 状态栏 ──
         private StatusStrip statusStrip;
@@ -680,6 +790,9 @@ namespace BMS_Protocol_Simulator
             _comm.OnScanPacksCompleted += Comm_OnScanPacksCompleted;
             _comm.OnInverterDetected += Comm_OnInverterDetected;
             _comm.OnAutoAdapted += Comm_OnAutoAdapted;
+
+            _dynamicSimTimer = new Timer { Interval = 1000 };
+            _dynamicSimTimer.Tick += DynamicSimTimer_Tick;
 
             BuildUI();
             RefreshPorts();
@@ -837,12 +950,65 @@ namespace BMS_Protocol_Simulator
             };
             flpTopRow2.Controls.Add(numSpecificId);
 
+            // 从机通信层故障注入与单芯压差模拟控件
+            chkSimSilence = new CheckBox { Text = "🔇模拟断线", AutoSize = true, ForeColor = Color.FromArgb(185, 28, 28), Margin = new Padding(6, 6, 4, 0) };
+            chkSimSilence.CheckedChanged += delegate(object s, EventArgs e) {
+                _comm.SimulateSilence = chkSimSilence.Checked;
+                lblStatusText.Text = chkSimSilence.Checked
+                    ? "🔇 已开启 [模拟断线静默]：从机将抑制一切应答，用于测试逆变器 BMS 失联故障 (如 56 故障)"
+                    : "✓ 已关闭 [模拟断线静默]：从机恢复正常应答";
+            };
+            flpTopRow2.Controls.Add(chkSimSilence);
+
+            chkSimCrcErr = new CheckBox { Text = "💥注入坏包", AutoSize = true, ForeColor = Color.FromArgb(180, 83, 9), Margin = new Padding(4, 6, 4, 0) };
+            chkSimCrcErr.CheckedChanged += delegate(object s, EventArgs e) {
+                _comm.SimulateCorruptChecksum = chkSimCrcErr.Checked;
+                lblStatusText.Text = chkSimCrcErr.Checked
+                    ? "💥 已开启 [校验错误注入]：从机应答帧将故意破坏 CRC16/Checksum，用于验证逆变器防误码与重试容错"
+                    : "✓ 已关闭 [校验错误注入]：从机恢复正常校验码";
+            };
+            flpTopRow2.Controls.Add(chkSimCrcErr);
+
+            lblSimDelay = new Label { Text = "应答延时:", AutoSize = true, Margin = new Padding(4, 6, 2, 0) };
+            flpTopRow2.Controls.Add(lblSimDelay);
+
+            cboSimDelay = new ComboBox { Width = 78, DropDownStyle = ComboBoxStyle.DropDownList, Margin = new Padding(0, 3, 4, 0) };
+            cboSimDelay.Items.AddRange(new object[] { "5ms(正常)", "+100ms", "+300ms", "+800ms" });
+            cboSimDelay.SelectedIndex = 0;
+            cboSimDelay.SelectedIndexChanged += delegate(object s, EventArgs e) {
+                switch (cboSimDelay.SelectedIndex)
+                {
+                    case 0: _comm.ExtraResponseDelayMs = 0; break;
+                    case 1: _comm.ExtraResponseDelayMs = 100; break;
+                    case 2: _comm.ExtraResponseDelayMs = 300; break;
+                    case 3: _comm.ExtraResponseDelayMs = 800; break;
+                }
+            };
+            flpTopRow2.Controls.Add(cboSimDelay);
+
+            lblCellDelta = new Label { Text = "单芯压差:", AutoSize = true, Margin = new Padding(4, 6, 2, 0) };
+            flpTopRow2.Controls.Add(lblCellDelta);
+
+            cboCellDelta = new ComboBox { Width = 86, DropDownStyle = ComboBoxStyle.DropDownList, Margin = new Padding(0, 3, 4, 0) };
+            cboCellDelta.Items.AddRange(new object[] { "20mV(默认)", "50mV(轻度)", "150mV(中度)", "300mV(严重)" });
+            cboCellDelta.SelectedIndex = 0;
+            cboCellDelta.SelectedIndexChanged += delegate(object s, EventArgs e) {
+                int deltaMv = 20;
+                if (cboCellDelta.SelectedIndex == 1) deltaMv = 50;
+                else if (cboCellDelta.SelectedIndex == 2) deltaMv = 150;
+                else if (cboCellDelta.SelectedIndex == 3) deltaMv = 300;
+                lock (_model.SyncRoot) { _model.CellImbalanceMv = deltaMv; }
+                lblStatusText.Text = string.Format("✓ 单芯极值压差已设为 {0}mV (最高电芯 #1 与最低电芯 #2 差值)", deltaMv);
+            };
+            flpTopRow2.Controls.Add(cboCellDelta);
+
             lblSlaveHint = new Label
             {
-                Text = "ℹ 模式说明: 作为BMS从机实时监听并响应逆变器轮询",
+                Text = "",
                 AutoSize = true,
                 ForeColor = Color.DimGray,
-                Margin = new Padding(6, 6, 2, 0)
+                Margin = new Padding(2, 6, 2, 0),
+                Visible = false
             };
             flpTopRow2.Controls.Add(lblSlaveHint);
 
@@ -891,6 +1057,49 @@ namespace BMS_Protocol_Simulator
                 _comm.TriggerSinglePoll();
             };
             flpTopRow2.Controls.Add(btnSinglePoll);
+
+            // 主机控制指令下拉菜单按钮
+            btnMasterCtrl = new Button { Text = "📤 下发控制 ▾", Width = 96, Height = 25, Margin = new Padding(2, 2, 6, 0), Visible = false };
+            ContextMenuStrip menuMasterCtrl = new ContextMenuStrip { Font = new Font("Microsoft YaHei UI", 9F), ShowImageMargin = false };
+            ToolStripMenuItem miWriteChgI = new ToolStripMenuItem("⚡ 写最大充电电流 (WRITE_MAX_CHG_CURRENT)");
+            miWriteChgI.Click += delegate(object s, EventArgs e) {
+                if (!_comm.IsOpen) { MessageBox.Show("请先打开串口！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                using (MasterParamInputDialog dlg = new MasterParamInputDialog("下发最大充电电流", "目标最大充电电流 (A):", (double)numMaxChgI.Value, 0, 500, 1))
+                {
+                    if (dlg.ShowDialog(this) == DialogResult.OK) _comm.SendMasterControl("WRITE_MAX_CHG_CURRENT", dlg.ResultValue);
+                }
+            };
+            ToolStripMenuItem miWriteDisI = new ToolStripMenuItem("⚡ 写最大放电电流 (WRITE_MAX_DIS_CURRENT)");
+            miWriteDisI.Click += delegate(object s, EventArgs e) {
+                if (!_comm.IsOpen) { MessageBox.Show("请先打开串口！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                using (MasterParamInputDialog dlg = new MasterParamInputDialog("下发最大放电电流", "目标最大放电电流 (A):", (double)numMaxDisI.Value, 0, 500, 1))
+                {
+                    if (dlg.ShowDialog(this) == DialogResult.OK) _comm.SendMasterControl("WRITE_MAX_DIS_CURRENT", dlg.ResultValue);
+                }
+            };
+            ToolStripMenuItem miWriteCv = new ToolStripMenuItem("🔋 写 CV 恒压充电点 (WRITE_CV_VOLT)");
+            miWriteCv.Click += delegate(object s, EventArgs e) {
+                if (!_comm.IsOpen) { MessageBox.Show("请先打开串口！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                using (MasterParamInputDialog dlg = new MasterParamInputDialog("下发 CV 恒压点", "目标 CV 恒压充电点 (V):", (double)numCvVolt.Value, 10, 150, 2))
+                {
+                    if (dlg.ShowDialog(this) == DialogResult.OK) _comm.SendMasterControl("WRITE_CV_VOLT", dlg.ResultValue);
+                }
+            };
+            ToolStripMenuItem miForceChg = new ToolStripMenuItem("🔥 触发强制充电控制 (FORCE_CHARGE)");
+            miForceChg.Click += delegate(object s, EventArgs e) {
+                if (!_comm.IsOpen) { MessageBox.Show("请先打开串口！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                _comm.SendMasterControl("FORCE_CHARGE", true);
+            };
+            ToolStripMenuItem miShutdown = new ToolStripMenuItem("💤 下发电池组关机指令 (Pylon 64H SHUTDOWN)");
+            miShutdown.Click += delegate(object s, EventArgs e) {
+                if (!_comm.IsOpen) { MessageBox.Show("请先打开串口！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                _comm.SendMasterControl("SHUTDOWN", null);
+            };
+            menuMasterCtrl.Items.AddRange(new ToolStripItem[] { miWriteChgI, miWriteDisI, miWriteCv, new ToolStripSeparator(), miForceChg, miShutdown });
+            btnMasterCtrl.Click += delegate(object s, EventArgs e) {
+                menuMasterCtrl.Show(btnMasterCtrl, new Point(0, btnMasterCtrl.Height));
+            };
+            flpTopRow2.Controls.Add(btnMasterCtrl);
 
             tlpTop.Controls.Add(flpTopRow2, 0, 1);
 
@@ -1170,6 +1379,29 @@ namespace BMS_Protocol_Simulator
             };
             flpActions.Controls.Add(chkAutoAdapt);
 
+            chkDynamicSim = new CheckBox
+            {
+                Text = "⚡ 动态充放推演",
+                AutoSize = true,
+                Checked = false,
+                Margin = new Padding(8, 5, 2, 2),
+                Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular),
+                ForeColor = Color.FromArgb(126, 34, 206)
+            };
+            chkDynamicSim.CheckedChanged += delegate(object s, EventArgs e) {
+                if (chkDynamicSim.Checked)
+                {
+                    _dynamicSimTimer.Start();
+                    lblStatusText.Text = "⚡ 动态充放推演已启动：按实时电流积分演进 SOC/容量/电压，达阈值自动触发保护跳闸";
+                }
+                else
+                {
+                    _dynamicSimTimer.Stop();
+                    lblStatusText.Text = "○ 动态充放推演已停止";
+                }
+            };
+            flpActions.Controls.Add(chkDynamicSim);
+
             pnlTab.Controls.Add(flpActions, 0, 1);
 
             // ── 行 2: 机型与协议智能诊断 / 警告横幅 ──
@@ -1258,6 +1490,96 @@ namespace BMS_Protocol_Simulator
                 {
                     _defaultConfig = dlg.ResultConfig;
                     lblStatusText.Text = "✓ 3KU / 6KU 默认值参数配置已成功保存至本地";
+                }
+            }
+        }
+
+        private void DynamicSimTimer_Tick(object sender, EventArgs e)
+        {
+            if (_comm != null && _comm.CurrentWorkMode == WorkMode.MasterPoller)
+            {
+                _dynamicSimTimer.Stop();
+                if (chkDynamicSim != null && chkDynamicSim.Checked) chkDynamicSim.Checked = false;
+                return;
+            }
+
+            // 用户正在手动编辑输入框时不抢占焦点更新
+            if (_currentFocusedControl != null) return;
+
+            bool changed = false;
+            string tripMessage = null;
+
+            lock (_model.SyncRoot)
+            {
+                double current = _model.Current;
+                if (Math.Abs(current) < 0.01) return;
+
+                // 检查禁充/禁放闭锁
+                if (current > 0 && !_model.CanCharge)
+                {
+                    _model.Current = 0;
+                    changed = true;
+                    tripMessage = "⛔ 充电回路已闭锁，动态推演已自动将充电电流归零";
+                }
+                else if (current < 0 && !_model.CanDischarge)
+                {
+                    _model.Current = 0;
+                    changed = true;
+                    tripMessage = "⛔ 放电回路已闭锁，动态推演已自动将放电电流归零";
+                }
+                else
+                {
+                    // 实验室 60 倍速安时积分 (1秒等效1分钟充放电时长)
+                    double deltaAh = current * (60.0 / 3600.0);
+                    double fullCap = Math.Max(1.0, _model.FullCapacity);
+                    double newRem = Math.Max(0.0, Math.Min(fullCap, _model.RemainingCapacity + deltaAh));
+                    _model.RemainingCapacity = Math.Round(newRem, 2);
+                    _model.SOC = Math.Round((_model.RemainingCapacity / fullCap) * 100.0, 0);
+
+                    // 根据 SOC 与充放内阻动态演进端电压
+                    double vSpan = Math.Max(2.0, _model.CVVoltage - _model.CutoffVoltage);
+                    double simVolt = _model.CutoffVoltage + vSpan * (_model.SOC / 100.0) + (current * 0.006);
+                    _model.Voltage = Math.Round(Math.Max(10.0, Math.Min(100.0, simVolt)), 2);
+
+                    // 阈值联动告警与保护
+                    _model.WarnLowCapacity = (_model.SOC <= 10.0);
+                    if (current > 0 && (_model.SOC >= 98.0 || _model.Voltage >= _model.CVVoltage))
+                    {
+                        _model.WarnGlobalOverVolt = true;
+                        _model.WarnSingleOverVolt = true;
+                    }
+                    if (current < 0 && (_model.SOC <= 5.0 || _model.Voltage <= _model.CutoffVoltage + 0.5))
+                    {
+                        _model.WarnGlobalUnderVolt = true;
+                        _model.WarnSingleUnderVolt = true;
+                    }
+
+                    if (current > 0 && _model.SOC >= 100.0)
+                    {
+                        _model.ProtOverVolt = true;
+                        _model.MaxChargeCurrent = 0;
+                        _model.Current = 0;
+                        tripMessage = "🛑 [动态推演] SOC 已达 100% 满充阈值，自动触发过压保护并切断充电电流！";
+                    }
+                    else if (current < 0 && (_model.SOC <= 0.0 || _model.Voltage <= _model.CutoffVoltage))
+                    {
+                        _model.ProtUnderVolt = true;
+                        _model.StatusForceCharge = true;
+                        _model.MaxDischargeCurrent = 0;
+                        _model.Current = 0;
+                        tripMessage = "⚠️ [动态推演] 电量已放空至截止阈值，自动触发欠压保护并请求强制充电！";
+                    }
+
+                    changed = true;
+                }
+            }
+
+            if (changed)
+            {
+                SyncModelToUI();
+                if (!string.IsNullOrEmpty(tripMessage))
+                {
+                    lblStatusText.Text = tripMessage;
                 }
             }
         }
@@ -1787,12 +2109,137 @@ namespace BMS_Protocol_Simulator
         {
             TableLayoutPanel mainFlags = new TableLayoutPanel();
             mainFlags.Dock = DockStyle.Fill;
-            mainFlags.RowCount = 3;
+            mainFlags.RowCount = 4;
             mainFlags.ColumnCount = 1;
             mainFlags.AutoScroll = true;
-            mainFlags.RowStyles.Add(new RowStyle(SizeType.Absolute, 105f));
+            mainFlags.RowStyles.Add(new RowStyle(SizeType.Absolute, 36f));
+            mainFlags.RowStyles.Add(new RowStyle(SizeType.Absolute, 100f));
             mainFlags.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
             mainFlags.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
+
+            // ── 0. 一键工况预设栏 ──
+            flpQuickPresets = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                Padding = new Padding(2, 3, 2, 1),
+                WrapContents = false
+            };
+            Label lblPresetTitle = new Label
+            {
+                Text = "快捷工况:",
+                AutoSize = true,
+                Margin = new Padding(2, 6, 4, 0),
+                Font = new Font("Microsoft YaHei UI", 8.5f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(55, 65, 81)
+            };
+            flpQuickPresets.Controls.Add(lblPresetTitle);
+
+            Func<string, Color, Color, EventHandler, Button> createPresetBtn = delegate(string text, Color bg, Color fg, EventHandler onClick)
+            {
+                Button b = new Button
+                {
+                    Text = text,
+                    AutoSize = true,
+                    Height = 25,
+                    BackColor = bg,
+                    ForeColor = fg,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Microsoft YaHei UI", 8.2f, FontStyle.Regular),
+                    Margin = new Padding(2, 1, 4, 1),
+                    Cursor = Cursors.Hand
+                };
+                b.FlatAppearance.BorderColor = Color.FromArgb(209, 213, 219);
+                b.Click += onClick;
+                return b;
+            };
+
+            Button btnPresetNormal = createPresetBtn("⚡ 正常满载", Color.FromArgb(236, 253, 245), Color.FromArgb(6, 95, 70), delegate(object s, EventArgs e) {
+                lock (_model.SyncRoot)
+                {
+                    _model.ClearAllAlarmsAndProtections();
+                    _model.SOC = 85.0;
+                    _model.RemainingCapacity = Math.Round(_model.FullCapacity * 0.85, 1);
+                    double span = Math.Max(2.0, _model.CVVoltage - _model.CutoffVoltage);
+                    _model.Voltage = Math.Round(_model.CutoffVoltage + span * 0.78, 2);
+                    _model.Current = 20.0;
+                    _model.MaxChargeCurrent = _userConfiguredMaxChgI > 0 ? _userConfiguredMaxChgI : 100.0;
+                    _model.MaxDischargeCurrent = _userConfiguredMaxDisI > 0 ? _userConfiguredMaxDisI : 100.0;
+                }
+                SyncModelToUI();
+                lblStatusText.Text = "✓ 已切换至 [正常满载] 工况 (SOC=85%, 充放双通, 全告警清零)";
+            });
+
+            Button btnPresetForceChg = createPresetBtn("🔋 低电强充", Color.FromArgb(254, 243, 199), Color.FromArgb(146, 64, 14), delegate(object s, EventArgs e) {
+                lock (_model.SyncRoot)
+                {
+                    _model.ClearAllAlarmsAndProtections();
+                    _model.SOC = 4.0;
+                    _model.RemainingCapacity = Math.Round(_model.FullCapacity * 0.04, 1);
+                    _model.Voltage = Math.Round(_model.CutoffVoltage + 0.4, 2);
+                    _model.Current = 0.0;
+                    _model.StatusForceCharge = true;
+                    _model.StatusChargeEnable = true;
+                    _model.StatusDischargeEnable = false;
+                    _model.WarnLowCapacity = true;
+                    _model.WarnGlobalUnderVolt = true;
+                    _model.MaxChargeCurrent = _userConfiguredMaxChgI > 0 ? _userConfiguredMaxChgI : 80.0;
+                    _model.MaxDischargeCurrent = 0.0;
+                }
+                SyncModelToUI();
+                lblStatusText.Text = "⚠️ 已切换至 [低电强充] 工况 (SOC=4%, 请求强制充电, 禁止放电)";
+            });
+
+            Button btnPresetOvTrip = createPresetBtn("🛑 过压跳闸", Color.FromArgb(254, 226, 226), Color.FromArgb(153, 27, 27), delegate(object s, EventArgs e) {
+                lock (_model.SyncRoot)
+                {
+                    _model.ClearAllAlarmsAndProtections();
+                    _model.SOC = 100.0;
+                    _model.RemainingCapacity = _model.FullCapacity;
+                    _model.Voltage = Math.Round(_model.CVVoltage + 1.2, 2);
+                    _model.Current = 0.0;
+                    _model.WarnSingleOverVolt = true;
+                    _model.WarnGlobalOverVolt = true;
+                    _model.ProtOverVolt = true;
+                    _model.MaxChargeCurrent = 0.0;
+                }
+                SyncModelToUI();
+                lblStatusText.Text = "🛑 已切换至 [过压跳闸] 工况 (总压超上限, 触发过压保护并切断充电限流)";
+            });
+
+            Button btnPresetUvTrip = createPresetBtn("⚠️ 欠压跳闸", Color.FromArgb(255, 237, 213), Color.FromArgb(154, 52, 18), delegate(object s, EventArgs e) {
+                lock (_model.SyncRoot)
+                {
+                    _model.ClearAllAlarmsAndProtections();
+                    _model.SOC = 0.0;
+                    _model.RemainingCapacity = 0.0;
+                    _model.Voltage = Math.Round(Math.Max(10.0, _model.CutoffVoltage - 1.0), 2);
+                    _model.Current = 0.0;
+                    _model.StatusForceCharge = true;
+                    _model.WarnSingleUnderVolt = true;
+                    _model.WarnGlobalUnderVolt = true;
+                    _model.WarnLowCapacity = true;
+                    _model.ProtUnderVolt = true;
+                    _model.MaxDischargeCurrent = 0.0;
+                }
+                SyncModelToUI();
+                lblStatusText.Text = "⚠️ 已切换至 [欠压跳闸] 工况 (SOC=0%, 触发欠压保护并切断放电限流)";
+            });
+
+            Button btnPresetClear = createPresetBtn("🧹 全清恢复", Color.FromArgb(243, 244, 246), Color.FromArgb(31, 41, 55), delegate(object s, EventArgs e) {
+                lock (_model.SyncRoot)
+                {
+                    _model.ClearAllAlarmsAndProtections();
+                    _model.MaxChargeCurrent = _userConfiguredMaxChgI > 0 ? _userConfiguredMaxChgI : 100.0;
+                    _model.MaxDischargeCurrent = _userConfiguredMaxDisI > 0 ? _userConfiguredMaxDisI : 100.0;
+                }
+                SyncModelToUI();
+                lblStatusText.Text = "✓ 已清除所有告警与保护跳闸标志，并恢复正常充放电限流";
+            });
+
+            flpQuickPresets.Controls.AddRange(new Control[] {
+                btnPresetNormal, btnPresetForceChg, btnPresetOvTrip, btnPresetUvTrip, btnPresetClear
+            });
+            mainFlags.Controls.Add(flpQuickPresets, 0, 0);
 
             // ── 1. 状态位 ──
             GroupBox gbStatus = new GroupBox();
@@ -1922,7 +2369,7 @@ namespace BMS_Protocol_Simulator
 
             flpStatus.Controls.AddRange(new Control[] { chkChgEn, chkDisEn, chkForceChg, chkFullChg, chkBalance, chkSleep });
             gbStatus.Controls.Add(flpStatus);
-            mainFlags.Controls.Add(gbStatus, 0, 0);
+            mainFlags.Controls.Add(gbStatus, 0, 1);
 
             // ── 2. 警告位 ──
             GroupBox gbWarn = new GroupBox();
@@ -2002,7 +2449,7 @@ namespace BMS_Protocol_Simulator
                 chkWarnOc, chkWarnHt, chkWarnLt, chkWarnVoltDiff, chkWarnLowCap
             });
             gbWarn.Controls.Add(flpWarn);
-            mainFlags.Controls.Add(gbWarn, 0, 1);
+            mainFlags.Controls.Add(gbWarn, 0, 2);
 
             // ── 3. 故障保护位 ──
             GroupBox gbProt = new GroupBox();
@@ -2093,7 +2540,7 @@ namespace BMS_Protocol_Simulator
                 chkProtHt, chkProtLt, chkProtSys, chkProtSoftStart
             });
             gbProt.Controls.Add(flpProt);
-            mainFlags.Controls.Add(gbProt, 0, 2);
+            mainFlags.Controls.Add(gbProt, 0, 3);
 
             parent.Controls.Add(mainFlags);
         }
@@ -2104,7 +2551,7 @@ namespace BMS_Protocol_Simulator
         private void BuildMonitorPanel(Panel parent)
         {
             GroupBox gbMonitor = new GroupBox();
-            gbMonitor.Text = "实时监视";
+            gbMonitor.Text = "实时监视 (双击任意报文行可打开【报文解剖器】)";
             gbMonitor.Dock = DockStyle.Fill;
             gbMonitor.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular);
 
@@ -2117,16 +2564,42 @@ namespace BMS_Protocol_Simulator
             pnlMon.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
             pnlMon.RowStyles.Add(new RowStyle(SizeType.Absolute, 42f));
 
-            // 统计栏
+            // 统计栏 + 过滤栏
             FlowLayoutPanel flpStats = new FlowLayoutPanel();
             flpStats.Dock = DockStyle.Fill;
+            flpStats.WrapContents = false;
             flpStats.Font = new Font("Microsoft YaHei UI", 8.5f, FontStyle.Regular);
 
-            lblRxCount = new Label(); lblRxCount.Text = "RX: 0"; lblRxCount.AutoSize = true; lblRxCount.Margin = new Padding(2, 4, 8, 0);
-            lblTxCount = new Label(); lblTxCount.Text = "TX: 0"; lblTxCount.AutoSize = true; lblTxCount.Margin = new Padding(2, 4, 8, 0);
-            lblErrCount = new Label(); lblErrCount.Text = "错误: 0"; lblErrCount.AutoSize = true; lblErrCount.Margin = new Padding(2, 4, 8, 0);
+            lblRxCount = new Label(); lblRxCount.Text = "RX: 0"; lblRxCount.AutoSize = true; lblRxCount.Margin = new Padding(2, 4, 6, 0);
+            lblTxCount = new Label(); lblTxCount.Text = "TX: 0"; lblTxCount.AutoSize = true; lblTxCount.Margin = new Padding(2, 4, 6, 0);
+            lblErrCount = new Label(); lblErrCount.Text = "错误: 0"; lblErrCount.AutoSize = true; lblErrCount.Margin = new Padding(2, 4, 6, 0);
             lblLatency = new Label(); lblLatency.Text = "响应时延: - ms"; lblLatency.AutoSize = true; lblLatency.Margin = new Padding(2, 4, 8, 0);
-            flpStats.Controls.AddRange(new Control[] { lblRxCount, lblTxCount, lblErrCount, lblLatency });
+
+            chkFilterAlarmOnly = new CheckBox
+            {
+                Text = "仅看告警",
+                AutoSize = true,
+                Margin = new Padding(4, 3, 4, 0),
+                ForeColor = Color.FromArgb(180, 83, 9)
+            };
+
+            Label lblFilterKw = new Label
+            {
+                Text = "过滤:",
+                AutoSize = true,
+                Margin = new Padding(2, 4, 0, 0),
+                ForeColor = Color.DimGray
+            };
+            txtLogFilter = new TextBox
+            {
+                Width = 82,
+                Margin = new Padding(2, 1, 2, 0),
+                Font = new Font("Microsoft YaHei UI", 8f)
+            };
+
+            flpStats.Controls.AddRange(new Control[] {
+                lblRxCount, lblTxCount, lblErrCount, lblLatency, chkFilterAlarmOnly, lblFilterKw, txtLogFilter
+            });
             pnlMon.Controls.Add(flpStats, 0, 0);
 
             // 日志文本框
@@ -2138,29 +2611,43 @@ namespace BMS_Protocol_Simulator
             rtbLog.ReadOnly = true;
             rtbLog.WordWrap = false;
             rtbLog.HideSelection = false;
+            rtbLog.MouseDoubleClick += RtbLog_MouseDoubleClick;
             pnlMon.Controls.Add(rtbLog, 0, 1);
 
             // 底部操作栏
             FlowLayoutPanel flpLogTools = new FlowLayoutPanel();
             flpLogTools.Dock = DockStyle.Fill;
+            flpLogTools.WrapContents = false;
             flpLogTools.Font = new Font("Microsoft YaHei UI", 8.5f, FontStyle.Regular);
             flpLogTools.Padding = new Padding(2, 4, 2, 2);
 
-            chkAutoScroll = new CheckBox(); chkAutoScroll.Text = "自动滚屏"; chkAutoScroll.Checked = true; chkAutoScroll.AutoSize = true; chkAutoScroll.Margin = new Padding(2, 6, 8, 0);
-            chkShowTime = new CheckBox(); chkShowTime.Text = "显示时间"; chkShowTime.Checked = true; chkShowTime.AutoSize = true; chkShowTime.Margin = new Padding(2, 6, 8, 0);
-            chkShowHex = new CheckBox(); chkShowHex.Text = "显示HEX"; chkShowHex.Checked = true; chkShowHex.AutoSize = true; chkShowHex.Margin = new Padding(2, 6, 8, 0);
+            chkAutoScroll = new CheckBox(); chkAutoScroll.Text = "自动滚屏"; chkAutoScroll.Checked = true; chkAutoScroll.AutoSize = true; chkAutoScroll.Margin = new Padding(2, 6, 6, 0);
+            chkShowTime = new CheckBox(); chkShowTime.Text = "显示时间"; chkShowTime.Checked = true; chkShowTime.AutoSize = true; chkShowTime.Margin = new Padding(2, 6, 6, 0);
+            chkShowHex = new CheckBox(); chkShowHex.Text = "显示HEX"; chkShowHex.Checked = true; chkShowHex.AutoSize = true; chkShowHex.Margin = new Padding(2, 6, 6, 0);
 
-            btnClearLog = new Button(); btnClearLog.Text = "清空"; btnClearLog.Width = 55; btnClearLog.Height = 26; btnClearLog.Margin = new Padding(2, 2, 6, 0);
+            btnClearLog = new Button(); btnClearLog.Text = "清空"; btnClearLog.Width = 50; btnClearLog.Height = 26; btnClearLog.Margin = new Padding(2, 2, 4, 0);
             btnClearLog.Click += delegate(object s, EventArgs e) {
                 rtbLog.Clear();
                 _comm.ResetStatistics();
                 UpdateStatsLabels();
             };
 
-            btnExportLog = new Button(); btnExportLog.Text = "导出日志"; btnExportLog.Width = 75; btnExportLog.Height = 26; btnExportLog.Margin = new Padding(2, 2, 6, 0);
+            btnExportLog = new Button(); btnExportLog.Text = "导出日志"; btnExportLog.Width = 70; btnExportLog.Height = 26; btnExportLog.Margin = new Padding(2, 2, 4, 0);
             btnExportLog.Click += BtnExportLog_Click;
 
-            flpLogTools.Controls.AddRange(new Control[] { chkAutoScroll, chkShowTime, chkShowHex, btnClearLog, btnExportLog });
+            btnCsvRecord = new Button
+            {
+                Text = "⏺ 录制CSV",
+                Width = 82,
+                Height = 26,
+                Margin = new Padding(2, 2, 4, 0),
+                ForeColor = Color.FromArgb(15, 118, 110)
+            };
+            btnCsvRecord.Click += BtnCsvRecord_Click;
+
+            flpLogTools.Controls.AddRange(new Control[] {
+                chkAutoScroll, chkShowTime, chkShowHex, btnClearLog, btnExportLog, btnCsvRecord
+            });
             pnlMon.Controls.Add(flpLogTools, 0, 2);
 
             gbMonitor.Controls.Add(pnlMon);
@@ -2204,6 +2691,13 @@ namespace BMS_Protocol_Simulator
             {
                 chkReplyAllIds.Visible = false;
                 if (lblSlaveHint != null) lblSlaveHint.Visible = false;
+                if (chkSimSilence != null) chkSimSilence.Visible = false;
+                if (chkSimCrcErr != null) chkSimCrcErr.Visible = false;
+                if (lblSimDelay != null) lblSimDelay.Visible = false;
+                if (cboSimDelay != null) cboSimDelay.Visible = false;
+                if (lblCellDelta != null) lblCellDelta.Visible = false;
+                if (cboCellDelta != null) cboCellDelta.Visible = false;
+
                 lblIdTag.Text = "目标从机ID:";
                 numSpecificId.Enabled = true;
 
@@ -2212,9 +2706,16 @@ namespace BMS_Protocol_Simulator
                 cboPollInterval.Visible = true;
                 btnPollPause.Visible = true;
                 if (btnSinglePoll != null) btnSinglePoll.Visible = true;
+                if (btnMasterCtrl != null) btnMasterCtrl.Visible = true;
 
                 if (pnlCombo != null) pnlCombo.Visible = false;
                 if (chkAutoAdapt != null) chkAutoAdapt.Visible = false;
+                if (chkDynamicSim != null)
+                {
+                    if (chkDynamicSim.Checked) chkDynamicSim.Checked = false;
+                    chkDynamicSim.Visible = false;
+                }
+                if (flpQuickPresets != null) flpQuickPresets.Enabled = false;
                 if (pnlBannerContainer != null) pnlBannerContainer.Visible = false;
                 if (lblHint != null)
                 {
@@ -2228,13 +2729,20 @@ namespace BMS_Protocol_Simulator
                 }
                 else
                 {
-                    lblStatusText.Text = "⚡ 已进入 [主机轮询模式] (主动向从机电池下发轮询读取指令)";
+                    lblStatusText.Text = "⚡ 已进入 [主机轮询模式] (主动向从机电池下发轮询读取与远控指令)";
                 }
             }
             else
             {
                 chkReplyAllIds.Visible = true;
                 if (lblSlaveHint != null) lblSlaveHint.Visible = true;
+                if (chkSimSilence != null) chkSimSilence.Visible = true;
+                if (chkSimCrcErr != null) chkSimCrcErr.Visible = true;
+                if (lblSimDelay != null) lblSimDelay.Visible = true;
+                if (cboSimDelay != null) cboSimDelay.Visible = true;
+                if (lblCellDelta != null) lblCellDelta.Visible = true;
+                if (cboCellDelta != null) cboCellDelta.Visible = true;
+
                 lblIdTag.Text = "响应从机ID:";
                 numSpecificId.Enabled = !chkReplyAllIds.Checked;
 
@@ -2243,9 +2751,12 @@ namespace BMS_Protocol_Simulator
                 cboPollInterval.Visible = false;
                 btnPollPause.Visible = false;
                 if (btnSinglePoll != null) btnSinglePoll.Visible = false;
+                if (btnMasterCtrl != null) btnMasterCtrl.Visible = false;
 
                 if (pnlCombo != null) pnlCombo.Visible = true;
                 if (chkAutoAdapt != null) chkAutoAdapt.Visible = true;
+                if (chkDynamicSim != null) chkDynamicSim.Visible = true;
+                if (flpQuickPresets != null) flpQuickPresets.Enabled = true;
                 if (pnlBannerContainer != null) pnlBannerContainer.Visible = true;
                 if (lblHint != null)
                 {
@@ -2304,6 +2815,7 @@ namespace BMS_Protocol_Simulator
                 
                 // 1. 同步数据到 UI 控件
                 SyncModelToUI();
+                AppendCsvRecordIfActive("MasterPoller Telemetry");
 
                 // 2. 模拟量设定页面变成实时监控：触发绿框/浅绿高亮闪烁效果
                 Color successGreen = Color.FromArgb(220, 252, 231); // 柔和薄荷绿 (0xDC, 0xFC, 0xE7)
@@ -2748,20 +3260,19 @@ namespace BMS_Protocol_Simulator
         {
             if (this.IsDisposed || !this.IsHandleCreated) return;
 
+            if (e.IsTx && _comm != null && _comm.CurrentWorkMode == WorkMode.SlaveSimulator)
+            {
+                AppendCsvRecordIfActive(e.Summary);
+            }
+
             this.BeginInvoke(new Action(delegate()
             {
                 if (this.IsDisposed || rtbLog.IsDisposed || !rtbLog.IsHandleCreated) return;
 
-                // 5000 行上限截断保护 (Win32 O(1) 免 GC 查询，防止长期自动化测试 OOM)
-                int lineCount = (int)SendMessage(rtbLog.Handle, EM_GETLINECOUNT, IntPtr.Zero, IntPtr.Zero);
-                if (lineCount > 5000)
+                UpdateStatsLabels();
+                if (e.LatencyMs > 0)
                 {
-                    int cutCharIndex = rtbLog.GetFirstCharIndexFromLine(1000);
-                    if (cutCharIndex > 0)
-                    {
-                        rtbLog.Select(0, cutCharIndex);
-                        rtbLog.SelectedText = string.Empty;
-                    }
+                    lblLatency.Text = string.Format("响应时延: {0} ms", e.LatencyMs);
                 }
 
                 string timeStr = e.Timestamp.ToString("HH:mm:ss");
@@ -2769,18 +3280,26 @@ namespace BMS_Protocol_Simulator
 
                 // 默认颜色: TX天蓝, RX浅绿
                 Color textColor = e.IsTx ? Color.FromArgb(120, 180, 250) : Color.FromArgb(100, 220, 140);
+                bool isAlarmOrFault = false;
 
                 // 告警/保护报文摘要智能高亮 (仅在真正触发告警或保护跳闸时高亮):
                 if (!string.IsNullOrEmpty(e.Summary))
                 {
-                    if (e.Summary.Contains("保护跳闸") || e.Summary.Contains("系统故障") || e.Summary.Contains("保护触发") || e.Summary.Contains("错误码"))
+                    if (e.Summary.Contains("保护跳闸") || e.Summary.Contains("系统故障") || e.Summary.Contains("保护触发") || e.Summary.Contains("错误码") || e.Summary.Contains("故障注入"))
                     {
                         textColor = Color.FromArgb(248, 113, 113); // 亮红 (保护跳闸)
+                        isAlarmOrFault = true;
                     }
                     else if (e.Summary.Contains("告警提示") || e.Summary.Contains("告警触发") || e.Summary.Contains("警告提示"))
                     {
                         textColor = Color.FromArgb(251, 191, 36);  // 亮橙黄 (告警提示)
+                        isAlarmOrFault = true;
                     }
+                }
+
+                if (chkFilterAlarmOnly != null && chkFilterAlarmOnly.Checked && !isAlarmOrFault)
+                {
+                    return;
                 }
 
                 StringBuilder sb = new StringBuilder();
@@ -2793,7 +3312,7 @@ namespace BMS_Protocol_Simulator
                     sb.Append(string.Format("{0}: ", dirStr));
                 }
 
-                if (chkShowHex.Checked)
+                if (chkShowHex.Checked && e.RawBytes != null && e.RawBytes.Length > 0)
                 {
                     sb.Append(BitConverter.ToString(e.RawBytes).Replace("-", " "));
                 }
@@ -2810,6 +3329,28 @@ namespace BMS_Protocol_Simulator
                 sb.AppendLine();
 
                 string logText = sb.ToString();
+
+                if (txtLogFilter != null && !string.IsNullOrEmpty(txtLogFilter.Text))
+                {
+                    string kw = txtLogFilter.Text.Trim();
+                    if (kw.Length > 0 && logText.IndexOf(kw, StringComparison.OrdinalIgnoreCase) < 0)
+                    {
+                        return;
+                    }
+                }
+
+                // 5000 行上限截断保护 (Win32 O(1) 免 GC 查询，防止长期自动化测试 OOM)
+                int lineCount = (int)SendMessage(rtbLog.Handle, EM_GETLINECOUNT, IntPtr.Zero, IntPtr.Zero);
+                if (lineCount > 5000)
+                {
+                    int cutCharIndex = rtbLog.GetFirstCharIndexFromLine(1000);
+                    if (cutCharIndex > 0)
+                    {
+                        rtbLog.Select(0, cutCharIndex);
+                        rtbLog.SelectedText = string.Empty;
+                    }
+                }
+
                 bool autoScroll = chkAutoScroll.Checked;
 
                 if (autoScroll)
@@ -2846,13 +3387,118 @@ namespace BMS_Protocol_Simulator
                         rtbLog.Invalidate();
                     }
                 }
-
-                UpdateStatsLabels();
-                if (e.LatencyMs > 0)
-                {
-                    lblLatency.Text = string.Format("响应时延: {0} ms", e.LatencyMs);
-                }
             }));
+        }
+
+        private void RtbLog_MouseDoubleClick(object sender, MouseEventArgs e)
+        {
+            if (rtbLog == null || rtbLog.TextLength == 0) return;
+            int charIdx = rtbLog.GetCharIndexFromPosition(e.Location);
+            int lineIdx = rtbLog.GetLineFromCharIndex(charIdx);
+            string[] lines = rtbLog.Lines;
+            if (lineIdx < 0 || lineIdx >= lines.Length) return;
+
+            string lineText = lines[lineIdx];
+            if (string.IsNullOrEmpty(lineText) || lineText.Trim().Length == 0) return;
+
+            string protName = (_comm != null && _comm.ProtocolHandler != null) ? _comm.ProtocolHandler.ProtocolName : "CVTE";
+            string report = FrameAnatomyInspector.DissectLogLine(lineText, protName);
+            using (FrameInspectorDialog dlg = new FrameInspectorDialog(report))
+            {
+                dlg.ShowDialog(this);
+            }
+        }
+
+        private void BtnCsvRecord_Click(object sender, EventArgs e)
+        {
+            lock (_csvLock)
+            {
+                if (!string.IsNullOrEmpty(_csvRecordPath))
+                {
+                    string finishedPath = _csvRecordPath;
+                    _csvRecordPath = null;
+                    btnCsvRecord.Text = "⏺ 录制CSV";
+                    btnCsvRecord.BackColor = SystemColors.Control;
+                    lblStatusText.Text = "⏹ CSV 遥测录制已停止，文件已保存至: " + finishedPath;
+                    return;
+                }
+            }
+
+            using (SaveFileDialog sfd = new SaveFileDialog())
+            {
+                sfd.Filter = "CSV 遥测报表 (*.csv)|*.csv";
+                sfd.FileName = string.Format("BMS_Telemetry_{0:yyyyMMdd_HHmmss}.csv", DateTime.Now);
+                if (sfd.ShowDialog() == DialogResult.OK)
+                {
+                    try
+                    {
+                        string header = "Timestamp,WorkMode,Protocol,Voltage(V),Current(A),Temp(C),SOC(%),SOH(%),RemCap(Ah),FullCap(Ah),MaxChgI(A),MaxDisI(A),CVVolt(V),CutoffVolt(V),CanChg,CanDis,ForceChg,Summary\r\n";
+                        File.WriteAllText(sfd.FileName, header, new UTF8Encoding(true));
+                        lock (_csvLock)
+                        {
+                            _csvRecordPath = sfd.FileName;
+                        }
+                        btnCsvRecord.Text = "⏹ 停止录制";
+                        btnCsvRecord.BackColor = Color.FromArgb(254, 226, 226);
+                        lblStatusText.Text = "⏺ 正在实时录制 CSV 遥测时序曲线: " + Path.GetFileName(sfd.FileName);
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show("创建 CSV 文件失败: " + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                }
+            }
+        }
+
+        private void AppendCsvRecordIfActive(string summary)
+        {
+            string path;
+            lock (_csvLock)
+            {
+                path = _csvRecordPath;
+            }
+            if (string.IsNullOrEmpty(path)) return;
+
+            try
+            {
+                string line;
+                string modeStr = (_comm != null && _comm.CurrentWorkMode == WorkMode.MasterPoller) ? "MasterPoller" : "SlaveSimulator";
+                string protStr = (_comm != null && _comm.ProtocolHandler != null) ? _comm.ProtocolHandler.ProtocolName : "Unknown";
+                string cleanSummary = (summary ?? string.Empty).Replace(",", ";").Replace("\r", " ").Replace("\n", " ");
+
+                lock (_model.SyncRoot)
+                {
+                    line = string.Format(CultureInfo.InvariantCulture,
+                        "{0:yyyy-MM-dd HH:mm:ss.fff},{1},{2},{3:F2},{4:F2},{5:F1},{6:F0},{7:F0},{8:F2},{9:F2},{10:F2},{11:F2},{12:F2},{13:F2},{14},{15},{16},\"{17}\"\r\n",
+                        DateTime.Now,
+                        modeStr,
+                        protStr,
+                        _model.Voltage,
+                        _model.Current,
+                        _model.Temperature,
+                        _model.SOC,
+                        _model.SOH,
+                        _model.RemainingCapacity,
+                        _model.FullCapacity,
+                        _model.MaxChargeCurrent,
+                        _model.MaxDischargeCurrent,
+                        _model.CVVoltage,
+                        _model.CutoffVoltage,
+                        _model.CanCharge ? 1 : 0,
+                        _model.CanDischarge ? 1 : 0,
+                        _model.StatusForceCharge ? 1 : 0,
+                        cleanSummary);
+                }
+
+                lock (_csvLock)
+                {
+                    if (!string.IsNullOrEmpty(_csvRecordPath))
+                    {
+                        File.AppendAllText(_csvRecordPath, line, new UTF8Encoding(false));
+                    }
+                }
+            }
+            catch { }
         }
 
         private void UpdateStatsLabels()
@@ -2919,6 +3565,11 @@ namespace BMS_Protocol_Simulator
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            if (_dynamicSimTimer != null)
+            {
+                try { _dynamicSimTimer.Stop(); _dynamicSimTimer.Dispose(); _dynamicSimTimer = null; } catch { }
+            }
+
             if (_flashTimers != null)
             {
                 foreach (Timer tmr in _flashTimers.Values)

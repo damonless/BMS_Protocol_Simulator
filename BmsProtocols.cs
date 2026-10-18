@@ -261,21 +261,34 @@ namespace BMS_Protocol_Simulator
                     return (model.Current > 0.1 && model.MaxChargeCurrent > 0) ? (ushort)60 : (ushort)0;
 
                 case 0x002E: // 单体最高电压 (mV, 动态适配 6KU 16串 / 3KU 8串, PDF Page 7)
-                    int cellCountMax = model.Voltage > 35.0 ? 16 : 8;
-                    return (ushort)Math.Round((model.Voltage / cellCountMax) * 1000 + 10);
+                    {
+                        int cellCountMax = model.Voltage > 35.0 ? 16 : 8;
+                        ushort maxMv, minMv;
+                        model.GetCellMillivolts(0, cellCountMax, out maxMv, out minMv);
+                        return maxMv;
+                    }
 
                 case 0x002F: // 单体最高电压位号
                     return 1;
 
                 case 0x0030: // 单体最低电压 (mV, 动态适配 6KU 16串 / 3KU 8串, PDF Page 7)
-                    int cellCountMin = model.Voltage > 35.0 ? 16 : 8;
-                    return (ushort)Math.Round((model.Voltage / cellCountMin) * 1000 - 10);
+                    {
+                        int cellCountMin = model.Voltage > 35.0 ? 16 : 8;
+                        ushort maxMv, minMv;
+                        model.GetCellMillivolts(1, cellCountMin, out maxMv, out minMv);
+                        return minMv;
+                    }
 
                 case 0x0031: // 单体最低电压位号
-                    return (ushort)(model.Voltage > 35.0 ? 16 : 8);
+                    return 2;
 
                 case 0x0032: // 电芯压差 (mV, PDF Page 8)
-                    return 20;
+                    {
+                        int cellCountDiff = model.Voltage > 35.0 ? 16 : 8;
+                        ushort maxMv, minMv;
+                        model.GetCellMillivolts(0, cellCountDiff, out maxMv, out minMv);
+                        return (ushort)Math.Max(0, maxMv - minMv);
+                    }
 
                 case 0x0033: // 单芯最高温度 (℃, PDF Page 8)
                     return (ushort)((short)Math.Round(model.Temperature));
@@ -309,7 +322,8 @@ namespace BMS_Protocol_Simulator
                         int cellIdx = regAddress - 0x0040;
                         if (cellIdx <= nCells)
                         {
-                            return (ushort)Math.Round((model.Voltage / nCells) * 1000);
+                            ushort maxMv, minMv;
+                            return model.GetCellMillivolts(cellIdx - 1, nCells, out maxMv, out minMv);
                         }
                     }
                     // 默认多 NTC 温度填充 0x0065~0x006E
@@ -634,7 +648,12 @@ namespace BMS_Protocol_Simulator
                     return 0x0101;
 
                 case 0x001D: // Delta Cell Voltage (mV -> V, PDF Page 9)
-                    return 20; // 20mV
+                    {
+                        int nCells = model.Voltage > 35.0 ? 16 : 8;
+                        ushort maxMv, minMv;
+                        model.GetCellMillivolts(0, nCells, out maxMv, out minMv);
+                        return (ushort)Math.Max(0, maxMv - minMv);
+                    }
 
                 case 0x001E: // Cycle Count (PDF Page 9)
                     return (ushort)Math.Max(0, Math.Min(65535, model.CycleCount));
@@ -672,18 +691,26 @@ namespace BMS_Protocol_Simulator
                     return 0x0000;
 
                 case 0x0025: // Maximum Cell Voltage (1mV, PDF Page 9)
-                    int cellCountMax = model.Voltage > 35.0 ? 16 : 8;
-                    return (ushort)Math.Round((model.Voltage / cellCountMax) * 1000 + 10);
+                    {
+                        int cellCountMax = model.Voltage > 35.0 ? 16 : 8;
+                        ushort maxMv, minMv;
+                        model.GetCellMillivolts(0, cellCountMax, out maxMv, out minMv);
+                        return maxMv;
+                    }
 
                 case 0x0026: // Minimum Cell Voltage (1mV, PDF Page 9)
-                    int cellCountMin = model.Voltage > 35.0 ? 16 : 8;
-                    return (ushort)Math.Round((model.Voltage / cellCountMin) * 1000 - 10);
+                    {
+                        int cellCountMin = model.Voltage > 35.0 ? 16 : 8;
+                        ushort maxMv, minMv;
+                        model.GetCellMillivolts(1, cellCountMin, out maxMv, out minMv);
+                        return minMv;
+                    }
 
                 case 0x0027: // Maximum Cell Voltage Number (PDF Page 9)
                     return 1;
 
                 case 0x0028: // Minimum Cell Voltage Number (PDF Page 9)
-                    return (ushort)(model.Voltage > 35.0 ? 16 : 8);
+                    return 2;
 
                 case 0x0029: // Cell Series (PDF Page 9)
                     return (ushort)(model.Voltage > 35.0 ? 16 : 8);
@@ -696,7 +723,8 @@ namespace BMS_Protocol_Simulator
                         int cellIdx = regAddress - 0x0070;
                         if (cellIdx <= nCells)
                         {
-                            return (ushort)Math.Round((model.Voltage / nCells) * 1000);
+                            ushort maxMv, minMv;
+                            return model.GetCellMillivolts(cellIdx - 1, nCells, out maxMv, out minMv);
                         }
                     }
                     return 0x0000;
@@ -1095,7 +1123,9 @@ namespace BMS_Protocol_Simulator
                         int cellIdx = regAddress - 0x0010;
                         if (cellIdx <= nCells)
                         {
-                            return (ushort)Math.Round((model.Voltage / nCells) * 10); // 0.1V
+                            ushort maxMv, minMv;
+                            ushort cMv = model.GetCellMillivolts(cellIdx - 1, nCells, out maxMv, out minMv);
+                            return (ushort)Math.Round(cMv / 100.0); // 0.1V
                         }
                     }
                     if (regAddress >= 0x0041 && regAddress <= 0x004A)
@@ -1395,8 +1425,8 @@ namespace BMS_Protocol_Simulator
 
                     int cellCount = model.Voltage < 35.0 ? 8 : 16;
                     ushort cellVoltMv = (ushort)Math.Max(0, Math.Min(65535, Math.Round((model.Voltage / cellCount) * 1000)));
-                    ushort cellVoltMax = (ushort)(cellVoltMv + (model.WarnVoltDiff ? 100 : 5));
-                    ushort cellVoltMin = (ushort)Math.Max(0, cellVoltMv - (model.WarnVoltDiff ? 100 : 5));
+                    ushort cellVoltMax, cellVoltMin;
+                    model.GetCellMillivolts(0, cellCount, out cellVoltMax, out cellVoltMin);
 
                     // 温度: 绝对开尔文温度 * 10 (Kelvin: 0.1K, e.g. 25.5°C = 25.5*10 + 2731 = 2986)
                     ushort uKelvinAvg = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.Temperature * 10 + 2731)));
@@ -1436,8 +1466,8 @@ namespace BMS_Protocol_Simulator
                     if (model.HasProtection) statusTag61 += string.Format(" [保护跳闸: {0}]", model.GetActiveProtectionsSummary());
                     if (model.HasWarning) statusTag61 += string.Format(" [告警提示: {0}]", model.GetActiveWarningsSummary());
 
-                    decodedInfo = string.Format("[PYLON-61H System Analog] 应答系统模拟量: 总压={0:F2}V, 电流={1:F2}A, SOC={2:F0}%, SOH={3:F0}%, 温度={4:F1}°C, 单芯={5}串({6}mV){7}",
-                        model.Voltage, model.Current, model.SOC, model.SOH, model.Temperature, cellCount, cellVoltMv, statusTag61);
+                    decodedInfo = string.Format("[PYLON-61H System Analog] 应答系统模拟量: 总压={0:F2}V, 电流={1:F2}A, SOC={2:F0}%, SOH={3:F0}%, 温度={4:F1}°C, 单芯={5}串({6}~{7}mV){8}",
+                        model.Voltage, model.Current, model.SOC, model.SOH, model.Temperature, cellCount, cellVoltMin, cellVoltMax, statusTag61);
                 }
                 else if (cid2 == "62") // 2.3 获取电池组系统状态告警量信息 (Page 17-18, 4字节 / 8 HEX字符)
                 {
@@ -1537,7 +1567,6 @@ namespace BMS_Protocol_Simulator
                 else if (cid2 == "42") // 获取模拟量量化后数据 (定点数)
                 {
                     int cellCount = model.Voltage < 35.0 ? 8 : 16;
-                    ushort cellMv = (ushort)Math.Max(0, Math.Min(65535, Math.Round((model.Voltage / cellCount) * 1000)));
                     ushort uVoltMv = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.Voltage * 1000)));
                     short sCurr100Ma = (short)Math.Max(-32768, Math.Min(32767, Math.Round(model.Current * 10)));
                     // 容量单位: 10mAh (0.01Ah), 如 100.0Ah -> 10000 = 0x2710
@@ -1549,7 +1578,11 @@ namespace BMS_Protocol_Simulator
                     StringBuilder sb = new StringBuilder();
                     sb.Append("01"); // Command Value / Pack 1
                     sb.Append(cellCount.ToString("X2")); // 电池串数
-                    for (int i = 0; i < cellCount; i++) sb.Append(cellMv.ToString("X4")); // 各串电芯电压 (mV)
+                    for (int i = 0; i < cellCount; i++)
+                    {
+                        ushort maxMv, minMv;
+                        sb.Append(model.GetCellMillivolts(i, cellCount, out maxMv, out minMv).ToString("X4")); // 各串电芯电压 (mV)
+                    }
                     sb.Append("04"); // 4 个温度传感器
                     for (int i = 0; i < 4; i++) sb.Append(uKelvin.ToString("X4")); // 温度 (0.1K)
                     sb.Append(((ushort)sCurr100Ma).ToString("X4")); // 电流 (0.1A, 有符号)
@@ -2241,6 +2274,200 @@ namespace BMS_Protocol_Simulator
             }
 
             return null;
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 6. 报文深度解剖器 (支持双击日志行逐字段拆解 Modbus RTU / Voltronic / Pylontech ASCII)
+    // ─────────────────────────────────────────────────────────────
+    public static class FrameAnatomyInspector
+    {
+        public static string DissectLogLine(string logLine, string currentProtocolName)
+        {
+            if (string.IsNullOrEmpty(logLine)) return "未选中有效报文行。";
+
+            string trimmed = logLine.Trim();
+            string direction = "未知方向";
+            int txIdx = trimmed.IndexOf("TX:");
+            int rxIdx = trimmed.IndexOf("RX:");
+            int hexStartIdx = -1;
+            if (txIdx >= 0 && (rxIdx < 0 || txIdx < rxIdx))
+            {
+                direction = "TX (本机发出)";
+                hexStartIdx = txIdx + 3;
+            }
+            else if (rxIdx >= 0)
+            {
+                direction = "RX (外部发来)";
+                hexStartIdx = rxIdx + 3;
+            }
+
+            System.Collections.Generic.List<byte> bytes = new System.Collections.Generic.List<byte>();
+            string summaryPart = "";
+            if (hexStartIdx >= 0 && hexStartIdx < trimmed.Length)
+            {
+                string rest = trimmed.Substring(hexStartIdx).TrimStart();
+                string[] tokens = rest.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                int consumedChars = 0;
+                for (int i = 0; i < tokens.Length; i++)
+                {
+                    string tk = tokens[i];
+                    byte b;
+                    if (tk.Length == 2 && byte.TryParse(tk, System.Globalization.NumberStyles.HexNumber, null, out b))
+                    {
+                        bytes.Add(b);
+                    }
+                    else
+                    {
+                        int idxInRest = rest.IndexOf(tk, consumedChars);
+                        if (idxInRest >= 0) summaryPart = rest.Substring(idxInRest);
+                        break;
+                    }
+                    consumedChars += tk.Length;
+                }
+            }
+
+            StringBuilder sb = new StringBuilder();
+            sb.AppendLine("══════════════════════════════════════════════════════════════");
+            sb.AppendLine("  BMS 协议帧深度解剖报告 (Frame Anatomy Inspector)");
+            sb.AppendLine("══════════════════════════════════════════════════════════════");
+            sb.AppendLine(string.Format("• 传输方向 : {0}", direction));
+            sb.AppendLine(string.Format("• 当前协议 : {0}", currentProtocolName ?? "未知"));
+            sb.AppendLine(string.Format("• 字节长度 : {0} Bytes", bytes.Count));
+            if (!string.IsNullOrEmpty(summaryPart))
+                sb.AppendLine(string.Format("• 业务摘要 : {0}", summaryPart));
+
+            if (bytes.Count == 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine("⚠️ 当前日志行未包含可解析的十六进制字节流（请勾选【显示HEX】后捕获报文）。");
+                sb.AppendLine("原始文本: " + trimmed);
+                return sb.ToString();
+            }
+
+            byte[] raw = bytes.ToArray();
+            sb.AppendLine(string.Format("• 原始 HEX : {0}", BitConverter.ToString(raw).Replace("-", " ")));
+            sb.AppendLine("──────────────────────────────────────────────────────────────");
+
+            // 1. Pylontech ASCII 帧解剖
+            if (raw[0] == 0x7E)
+            {
+                string ascii = Encoding.ASCII.GetString(raw).TrimEnd('\r', '\n');
+                bool chkOk = PylonChecksum.Verify(raw);
+                ushort calcChk = raw.Length >= 6 ? PylonChecksum.Calculate(raw, 1, raw.Length - 6) : (ushort)0;
+
+                sb.AppendLine("[协议帧类型] : Pylontech RS485 ASCII 协议帧");
+                sb.AppendLine(string.Format("[ASCII 文本] : {0}\\r", ascii));
+                sb.AppendLine(string.Format("[校验码状态] : {0} (计算值: 0x{1:X4})", chkOk ? "✓ 校验通过 (PASS)" : "✕ 校验错误 (FAIL)", calcChk));
+                sb.AppendLine();
+                if (ascii.Length >= 17)
+                {
+                    string ver = ascii.Substring(1, 2);
+                    string adr = ascii.Substring(3, 2);
+                    string cid1 = ascii.Substring(5, 2);
+                    string cid2 = ascii.Substring(7, 2);
+                    string lenField = ascii.Substring(9, 4);
+                    int infoHexLen = ascii.Length - 13 - 4;
+                    string infoStr = infoHexLen > 0 ? ascii.Substring(13, infoHexLen) : "(空)";
+                    string chkStr = ascii.Substring(ascii.Length - 4, 4);
+
+                    sb.AppendLine("┌──────────┬──────────┬────────────────────────────────────────┐");
+                    sb.AppendLine("│ 字段名称 │ 报文内容 │ 物理意义与规范解析                     │");
+                    sb.AppendLine("├──────────┼──────────┼────────────────────────────────────────┤");
+                    sb.AppendLine(string.Format("│ SOI      │ 0x7E (~) │ 起始标志位                             │"));
+                    sb.AppendLine(string.Format("│ VER      │ {0,-8} │ 协议版本号 (V{0})                       │", ver));
+                    sb.AppendLine(string.Format("│ ADR      │ 0x{0,-6} │ 电池包通信地址                         │", adr));
+                    sb.AppendLine(string.Format("│ CID1     │ 0x{0,-6} │ 设备类型码 (46H=磷酸铁锂电池)          │", cid1));
+                    sb.AppendLine(string.Format("│ CID2/RTN │ 0x{0,-6} │ {1,-38} │", cid2, GetPylonCid2Description(cid2)));
+                    sb.AppendLine(string.Format("│ LENGTH   │ 0x{0,-6} │ INFO 长度字段 ({1} HEX字符)             │", lenField, infoHexLen));
+                    sb.AppendLine(string.Format("│ CHKSUM   │ 0x{0,-6} │ 帧校验和 ({1})                         │", chkStr, chkOk ? "合法" : "异常"));
+                    sb.AppendLine(string.Format("│ EOI      │ 0x0D(\\r) │ 结束标志位 (CR)                        │"));
+                    sb.AppendLine("└──────────┴──────────┴────────────────────────────────────────┘");
+                    sb.AppendLine();
+                    sb.AppendLine("[INFO 数据域载荷]:");
+                    sb.AppendLine("  " + infoStr);
+                }
+                return sb.ToString();
+            }
+
+            // 2. Modbus RTU / Voltronic 帧解剖
+            bool crcOk = (raw.Length >= 5) && ModbusCrc.Check(raw, raw.Length);
+            ushort calcCrc = (raw.Length >= 3) ? ModbusCrc.Calculate(raw, raw.Length - 2) : (ushort)0;
+            ushort frameCrc = (raw.Length >= 2) ? (ushort)((raw[raw.Length - 2] << 8) | raw[raw.Length - 1]) : (ushort)0;
+
+            sb.AppendLine("[协议帧类型] : Modbus RTU 二进制帧");
+            sb.AppendLine(string.Format("[CRC16 校验] : {0} (报文值: 0x{1:X4}, 计算值: 0x{2:X4})",
+                crcOk ? "✓ 校验通过 (PASS)" : "✕ 校验错误 (FAIL)", frameCrc, calcCrc));
+            sb.AppendLine();
+
+            if (raw.Length == 8 && (raw[1] == 0x03 || raw[1] == 0x06 || raw[1] == 0x10))
+            {
+                ushort addr = (ushort)((raw[2] << 8) | raw[3]);
+                ushort valOrCount = (ushort)((raw[4] << 8) | raw[5]);
+                string fcDesc = raw[1] == 0x03 ? "0x03 (读保持寄存器)" : (raw[1] == 0x06 ? "0x06 (写单个寄存器)" : "0x10 (写多个寄存器)");
+                sb.AppendLine(string.Format("• 从机地址 (Slave ID) : 0x{0:X2} ({0})", raw[0]));
+                sb.AppendLine(string.Format("• 功能码   (Function) : {0}", fcDesc));
+                sb.AppendLine(string.Format("• 目标地址 (Reg Addr) : 0x{0:X4} (十进制: {0})", addr));
+                if (raw[1] == 0x03)
+                    sb.AppendLine(string.Format("• 读取数量 (Reg Cnt ) : {0} 个寄存器 ({1} Bytes)", valOrCount, valOrCount * 2));
+                else
+                    sb.AppendLine(string.Format("• 写入数值 (Reg Val ) : 0x{0:X4} (无符号: {0}, 有符号: {1})", valOrCount, (short)valOrCount));
+            }
+            else if (raw.Length >= 5 && raw[1] == 0x03)
+            {
+                // 判断是否为 Voltronic 4字节帧头 ([ID][03][LenHi][LenLo]) 或 标准 Modbus 3字节帧头 ([ID][03][ByteCount])
+                int dataStart = 3;
+                int regCount = raw[2] / 2;
+                bool isVoltronicHeader = false;
+                if (raw.Length >= 6)
+                {
+                    int vRegCount = (raw[2] << 8) | raw[3];
+                    if (4 + vRegCount * 2 + 2 == raw.Length && (3 + raw[2] + 2 != raw.Length))
+                    {
+                        isVoltronicHeader = true;
+                        dataStart = 4;
+                        regCount = vRegCount;
+                    }
+                }
+
+                sb.AppendLine(string.Format("• 从机地址 (Slave ID) : 0x{0:X2} ({0})", raw[0]));
+                sb.AppendLine(string.Format("• 帧头格式 (Header  ) : {0} (共 {1} 个 16-bit 寄存器字)",
+                    isVoltronicHeader ? "Voltronic 双字节长度头 [ID][03][RegHi][RegLo]" : "标准 Modbus 单字节长度头 [ID][03][ByteCnt]", regCount));
+                sb.AppendLine();
+                sb.AppendLine("┌──────────┬──────────┬────────────┬────────────┬──────────────┐");
+                sb.AppendLine("│ 寄存器序 │ 十六进制 │ 无符号十进 │ 有符号十进 │ 常见缩放参考 │");
+                sb.AppendLine("├──────────┼──────────┼────────────┼────────────┼──────────────┤");
+                for (int i = 0; i < regCount; i++)
+                {
+                    int idx = dataStart + i * 2;
+                    if (idx + 1 >= raw.Length - 2) break;
+                    ushort uVal = (ushort)((raw[idx] << 8) | raw[idx + 1]);
+                    short sVal = (short)uVal;
+                    sb.AppendLine(string.Format("│ Word #{0,-2} │ 0x{1:X4}   │ {2,-10} │ {3,-10} │ {4,6:F2} (÷100)│",
+                        i, uVal, uVal, sVal, sVal / 100.0));
+                }
+                sb.AppendLine("└──────────┴──────────┴────────────┴────────────┴──────────────┘");
+            }
+
+            return sb.ToString();
+        }
+
+        private static string GetPylonCid2Description(string cid2)
+        {
+            switch (cid2.ToUpper())
+            {
+                case "00": return "RTN=00H (正常应答无错误)";
+                case "60": return "CID2=60H (读电池系统基本版本与条码)";
+                case "61": return "CID2=61H (读电池系统运行模拟量)";
+                case "62": return "CID2=62H (读电池系统告警与保护状态)";
+                case "63": return "CID2=63H (读电池系统充放电管理参数)";
+                case "64": return "CID2=64H (控制电池系统关机指令)";
+                case "42": return "CID2=42H (读单包模拟量与单芯电压)";
+                case "44": return "CID2=44H (读单包告警与保护状态)";
+                case "47": return "CID2=47H (读单包系统配置参数)";
+                case "92": return "CID2=92H (读单包充放电管理参数)";
+                default: return "CID2/RTN=" + cid2 + "H";
+            }
         }
     }
 
