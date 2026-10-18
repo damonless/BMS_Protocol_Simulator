@@ -4,9 +4,15 @@ using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.IO.Ports;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
+
+[assembly: AssemblyTitle("BMS 协议仿真工具")]
+[assembly: AssemblyProduct("BMS 协议仿真工具")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 namespace BMS_Protocol_Simulator
 {
@@ -803,7 +809,7 @@ namespace BMS_Protocol_Simulator
 
         private void BuildUI()
         {
-            this.Text = "BMS 多协议仿真与自动化测试工作台 V1.0 (CVTE / Growatt / Pylon / Voltronic)";
+            this.Text = "BMS 协议仿真工具 V1.1";
             this.Size = new Size(1200, 740);
             this.MinimumSize = new Size(1060, 640);
             this.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
