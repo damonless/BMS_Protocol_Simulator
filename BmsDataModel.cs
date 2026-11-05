@@ -11,7 +11,8 @@ namespace BMS_Protocol_Simulator
         CVTE,
         GROWATT_MODBUS,
         VOLTRONIC_MODBUS,
-        PYLONTECH_ASCII
+        PYLONTECH_ASCII,
+        LIB_MODBUS
     }
 
     public enum WorkMode

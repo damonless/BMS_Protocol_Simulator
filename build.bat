@@ -17,7 +17,6 @@ if exist "%~dp0app.ico" (
 
 if %ERRORLEVEL% equ 0 (
     echo [SUCCESS] Build completed! Output: %~dp0BMS_Protocol_Simulator.exe
-    copy /Y "%~dp0BMS_Protocol_Simulator.exe" "%~dp0..\BMS_Protocol_Simulator.exe" >nul
 ) else (
     echo [ERROR] Build failed!
 )

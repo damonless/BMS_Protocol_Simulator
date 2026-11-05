@@ -780,6 +780,7 @@ namespace BMS_Protocol_Simulator
         private DetectionResult _lastDetectionResult = null;
 
         private bool _isUpdatingUi = false;
+        private bool _hasMasterTelemetryReceived = false;
 
         public MainForm()
         {
@@ -896,7 +897,8 @@ namespace BMS_Protocol_Simulator
                 "CVTE",
                 "GROWATT",
                 "VOLTRONIC",
-                "PYLONTECH"
+                "PYLONTECH",
+                "LIB_MODBUS"
             });
             cboProtocol.SelectedIndex = 0;
             cboProtocol.SelectedIndexChanged += CboProtocol_SelectedIndexChanged;
@@ -951,8 +953,15 @@ namespace BMS_Protocol_Simulator
 
             numSpecificId = new NumericUpDown { Minimum = 0, Maximum = 15, Value = 1, Width = 42, Enabled = false, Margin = new Padding(0, 3, 8, 0) };
             numSpecificId.ValueChanged += delegate(object s, EventArgs e) {
-                _comm.SpecificId = (int)numSpecificId.Value;
-                _comm.TargetSlaveId = (byte)numSpecificId.Value;
+                int newId = (int)numSpecificId.Value;
+                bool idChanged = (_comm.TargetSlaveId != (byte)newId);
+                _comm.SpecificId = newId;
+                _comm.TargetSlaveId = (byte)newId;
+                if (!_isUpdatingUi && idChanged && _comm.CurrentWorkMode == WorkMode.MasterPoller)
+                {
+                    _hasMasterTelemetryReceived = false;
+                    ClearMasterTelemetryDisplay();
+                }
             };
             flpTopRow2.Controls.Add(numSpecificId);
 
@@ -1676,7 +1685,14 @@ namespace BMS_Protocol_Simulator
             TextBox tb = GetInnerTextBox(num);
             if (tb != null)
             {
-                tb.Text = (num.DecimalPlaces > 0) ? committed.ToString("F" + num.DecimalPlaces) : committed.ToString("F0");
+                if (_comm != null && _comm.CurrentWorkMode == WorkMode.MasterPoller && !_hasMasterTelemetryReceived)
+                {
+                    tb.Text = "";
+                }
+                else
+                {
+                    tb.Text = (num.DecimalPlaces > 0) ? committed.ToString("F" + num.DecimalPlaces) : committed.ToString("F0");
+                }
                 tb.SelectionLength = 0;
             }
             _isDirty[num] = false;
@@ -1951,6 +1967,17 @@ namespace BMS_Protocol_Simulator
                     if (num == numCutoffVolt)
                     {
                         ShowProtocolDifferenceTip(num, "【协议差异提示】\nGrowatt Modbus-RTU 协议寄存器表 (0x0001~0x0029) 中未定义【放电截止点】寄存器 (仅包含 0x0021 CV 充电电压)。\nGrowatt 逆变器依据本地配置或 BMS 欠压保护执行放电截止切断。");
+                    }
+                }
+                else if (cboProtocol.SelectedIndex == 4) // LIB_MODBUS 协议模式提示
+                {
+                    if (num == numCutoffVolt)
+                    {
+                        ShowProtocolDifferenceTip(num, "【协议差异提示】\nLIB_MODBUS (RS485 V1.30) 协议寄存器表 (0x1000~0x1016) 中未定义【放电截止点】寄存器 (仅包含 0x1014 恒压充电电压)。\n逆变器依据本地配置或 BMS 欠压保护执行放电截止切断。");
+                    }
+                    else if (num == numMaxDisI)
+                    {
+                        ShowProtocolDifferenceTip(num, "【协议差异提示】\nLIB_MODBUS 协议仅定义了【最大充电电流 (0x100C)】寄存器，未定义独立的【最大放电电流】限流寄存器。\n逆变器依据 0x1007 状态字的【放电使能】进行放电回路控制。");
                     }
                 }
             }
@@ -2312,6 +2339,10 @@ namespace BMS_Protocol_Simulator
                         {
                             ShowProtocolDifferenceTip(chkFullChg, "【协议差异提示】\nGrowatt Modbus-RTU 协议状态字 (0x0013) 中未定义【请求满充】标志位 (仅包含 Bit 12 强制充电请求)。\n该标志位为 Pylontech 与 Voltronic 专属。当前协议下不予下发。");
                         }
+                        else if (cboProtocol.SelectedIndex == 4) // 4: LIB_MODBUS
+                        {
+                            ShowProtocolDifferenceTip(chkFullChg, "【协议差异提示】\nLIB_MODBUS 协议状态字 (0x1007) 中未定义【请求满充】标志位。\n当前协议下不予下发。");
+                        }
                     }
                 }
             };
@@ -2330,6 +2361,10 @@ namespace BMS_Protocol_Simulator
                         {
                             ShowProtocolDifferenceTip(chkBalance, "【协议差异提示】\nVoltronic 协议充放电状态字 (0x0074) 中无独立的【电芯均衡中】状态位。\n当前协议下仅作本地仿真模拟。");
                         }
+                        else if (cboProtocol.SelectedIndex == 4) // 4: LIB_MODBUS
+                        {
+                            ShowProtocolDifferenceTip(chkBalance, "【协议差异提示】\nLIB_MODBUS 协议状态字 (0x1007) 中无独立的【电芯均衡中】状态位。\n当前协议下仅作本地仿真模拟。");
+                        }
                     }
                 }
             };
@@ -2347,6 +2382,10 @@ namespace BMS_Protocol_Simulator
                         else if (cboProtocol.SelectedIndex == 2) // 2: Voltronic
                         {
                             ShowProtocolDifferenceTip(chkSleep, "【协议差异提示】\nVoltronic 协议充放电状态字 (0x0074) 中无【休眠状态】标志位。\n当前协议下仅作本地仿真模拟。");
+                        }
+                        else if (cboProtocol.SelectedIndex == 4) // 4: LIB_MODBUS
+                        {
+                            ShowProtocolDifferenceTip(chkSleep, "【协议差异提示】\nLIB_MODBUS 协议运行态报文中无【休眠状态】标志位。\n当前协议下仅作本地仿真模拟。");
                         }
                     }
                 }
@@ -2404,9 +2443,16 @@ namespace BMS_Protocol_Simulator
             chkWarnVoltDiff.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
                     lock (_model.SyncRoot) { _model.WarnVoltDiff = chkWarnVoltDiff.Checked; }
-                    if (chkWarnVoltDiff.Checked && cboProtocol != null && cboProtocol.SelectedIndex == 2) // 2: Voltronic
+                    if (chkWarnVoltDiff.Checked && cboProtocol != null)
                     {
-                        ShowProtocolDifferenceTip(chkWarnVoltDiff, "【协议差异提示】\nVoltronic 协议告警矩阵 (0x0060~0x0069) 中未定义独立的【电芯压差过大】告警位。\n当前协议下仅作本地仿真模拟。");
+                        if (cboProtocol.SelectedIndex == 2) // 2: Voltronic
+                        {
+                            ShowProtocolDifferenceTip(chkWarnVoltDiff, "【协议差异提示】\nVoltronic 协议告警矩阵 (0x0060~0x0069) 中未定义独立的【电芯压差过大】告警位。\n当前协议下仅作本地仿真模拟。");
+                        }
+                        else if (cboProtocol.SelectedIndex == 4) // 4: LIB_MODBUS
+                        {
+                            ShowProtocolDifferenceTip(chkWarnVoltDiff, "【协议差异提示】\nLIB_MODBUS 协议告警寄存器 (0x1005) 中未定义独立的【电芯压差过大】告警位。\n当前协议下仅作本地仿真模拟。");
+                        }
                     }
                 }
             };
@@ -2516,6 +2562,10 @@ namespace BMS_Protocol_Simulator
                         {
                             ShowProtocolDifferenceTip(chkProtSoftStart, "【协议差异提示】\nVoltronic 协议告警与状态矩阵 (0x0060~0x0069) 中未定义【软起动失败】保护位。\n当前协议下仅作本地仿真模拟。");
                         }
+                        else if (cboProtocol.SelectedIndex == 4) // 4: LIB_MODBUS
+                        {
+                            ShowProtocolDifferenceTip(chkProtSoftStart, "【协议差异提示】\nLIB_MODBUS 协议规范中未定义【软起动失败】保护位。\n当前协议下不予下发。");
+                        }
                     }
                 }
             };
@@ -2526,6 +2576,22 @@ namespace BMS_Protocol_Simulator
             });
             gbProt.Controls.Add(flpProt);
             mainFlags.Controls.Add(gbProt, 0, 3);
+
+            CheckBox[] allFlagChks = new CheckBox[] {
+                chkChgEn, chkDisEn, chkForceChg, chkFullChg, chkBalance, chkSleep,
+                chkWarnSingleOv, chkWarnSingleUv, chkWarnGlobalOv, chkWarnGlobalUv,
+                chkWarnOc, chkWarnHt, chkWarnLt, chkWarnVoltDiff, chkWarnLowCap,
+                chkProtOv, chkProtUv, chkProtOc, chkProtSc, chkProtHt, chkProtLt, chkProtSys, chkProtSoftStart
+            };
+            for (int i = 0; i < allFlagChks.Length; i++)
+            {
+                if (allFlagChks[i] != null)
+                {
+                    allFlagChks[i].CheckedChanged += delegate(object s, EventArgs e) {
+                        if (!_isUpdatingUi) UpdateAlarmProtectionVisualStyles();
+                    };
+                }
+            }
 
             parent.Controls.Add(mainFlags);
         }
@@ -2663,9 +2729,102 @@ namespace BMS_Protocol_Simulator
             lblProtocolBadge.Text = string.Format("协议: {0} {1}", _comm.ProtocolHandler.ProtocolName, modeStr);
         }
 
+        private void ClearMasterTelemetryDisplay()
+        {
+            _isUpdatingUi = true;
+            lock (_model.SyncRoot)
+            {
+                _model.ClearAllAlarmsAndProtections();
+                _model.StatusChargeEnable = false;
+                _model.StatusDischargeEnable = false;
+                _model.StatusForceCharge = false;
+                _model.StatusFullCharge = false;
+                _model.StatusBalancing = false;
+                _model.StatusSleep = false;
+            }
+
+            NumericUpDown[] allNums = new NumericUpDown[] {
+                numVoltage, numCurrent, numTemp, numSoc, numSoh,
+                numRemCap, numFullCap, numMaxChgI, numMaxDisI, numCvVolt, numCutoffVolt, numCycleCount
+            };
+            for (int i = 0; i < allNums.Length; i++)
+            {
+                if (allNums[i] != null)
+                {
+                    TextBox tb = GetInnerTextBox(allNums[i]);
+                    if (tb != null)
+                    {
+                        tb.Text = "";
+                    }
+                    _isDirty[allNums[i]] = false;
+                }
+            }
+
+            CheckBox[] allChks = new CheckBox[] {
+                chkChgEn, chkDisEn, chkForceChg, chkFullChg, chkBalance, chkSleep,
+                chkWarnSingleOv, chkWarnSingleUv, chkWarnGlobalOv, chkWarnGlobalUv,
+                chkWarnOc, chkWarnHt, chkWarnLt, chkWarnVoltDiff, chkWarnLowCap,
+                chkProtOv, chkProtUv, chkProtOc, chkProtSc, chkProtHt, chkProtLt, chkProtSys, chkProtSoftStart
+            };
+            for (int i = 0; i < allChks.Length; i++)
+            {
+                if (allChks[i] != null)
+                {
+                    allChks[i].Checked = false;
+                }
+            }
+
+            UpdateAlarmProtectionVisualStyles();
+            _isUpdatingUi = false;
+        }
+
+        private void UpdateAlarmProtectionVisualStyles()
+        {
+            CheckBox[] statusChks = new CheckBox[] {
+                chkChgEn, chkDisEn, chkForceChg, chkFullChg, chkBalance, chkSleep
+            };
+            for (int i = 0; i < statusChks.Length; i++)
+            {
+                if (statusChks[i] != null)
+                {
+                    bool active = statusChks[i].Checked;
+                    statusChks[i].ForeColor = active ? Color.FromArgb(21, 128, 61) : SystemColors.ControlText;
+                    statusChks[i].Font = new Font("Microsoft YaHei UI", 9F, active ? FontStyle.Bold : FontStyle.Regular);
+                }
+            }
+
+            CheckBox[] warnChks = new CheckBox[] {
+                chkWarnSingleOv, chkWarnSingleUv, chkWarnGlobalOv, chkWarnGlobalUv,
+                chkWarnOc, chkWarnHt, chkWarnLt, chkWarnVoltDiff, chkWarnLowCap
+            };
+            for (int i = 0; i < warnChks.Length; i++)
+            {
+                if (warnChks[i] != null)
+                {
+                    bool active = warnChks[i].Checked;
+                    warnChks[i].ForeColor = active ? Color.FromArgb(180, 83, 9) : SystemColors.ControlText;
+                    warnChks[i].Font = new Font("Microsoft YaHei UI", 9F, active ? FontStyle.Bold : FontStyle.Regular);
+                }
+            }
+
+            CheckBox[] protChks = new CheckBox[] {
+                chkProtOv, chkProtUv, chkProtOc, chkProtSc, chkProtHt, chkProtLt, chkProtSys, chkProtSoftStart
+            };
+            for (int i = 0; i < protChks.Length; i++)
+            {
+                if (protChks[i] != null)
+                {
+                    bool active = protChks[i].Checked;
+                    protChks[i].ForeColor = active ? Color.FromArgb(185, 28, 28) : SystemColors.ControlText;
+                    protChks[i].Font = new Font("Microsoft YaHei UI", 9F, active ? FontStyle.Bold : FontStyle.Regular);
+                }
+            }
+        }
+
         private void UpdateWorkModeUI()
         {
             bool isMaster = (cboWorkMode.SelectedIndex == 1);
+            bool wasMaster = (_comm.CurrentWorkMode == WorkMode.MasterPoller);
             _comm.CurrentWorkMode = isMaster ? WorkMode.MasterPoller : WorkMode.SlaveSimulator;
             _comm.TargetSlaveId = (byte)numSpecificId.Value;
             _comm.SpecificId = (int)numSpecificId.Value;
@@ -2706,6 +2865,9 @@ namespace BMS_Protocol_Simulator
                     lblHint.ForeColor = Color.DimGray;
                 }
 
+                _hasMasterTelemetryReceived = false;
+                ClearMasterTelemetryDisplay();
+
                 if (_comm != null && _comm.IsOpen)
                 {
                     lblStatusText.Text = string.Format("主机轮询模式：正在采集目标从机 ID:{0} 遥测数据", _comm.TargetSlaveId);
@@ -2745,6 +2907,13 @@ namespace BMS_Protocol_Simulator
                 {
                     lblHint.Text = "按 Enter 或失焦自动生效";
                     lblHint.ForeColor = Color.DimGray;
+                }
+
+                if (wasMaster)
+                {
+                    _defaultConfig = BmsDefaultConfig.Load();
+                    _model.ApplyDefaultConfig(_defaultConfig.ActiveProfile);
+                    SyncModelToUI();
                 }
 
                 if (_comm != null && _comm.IsOpen)
@@ -2796,7 +2965,8 @@ namespace BMS_Protocol_Simulator
             {
                 if (this.IsDisposed) return;
                 
-                // 1. 同步数据到 UI 控件
+                // 1. 标记已收到从机数据并同步到 UI 控件
+                _hasMasterTelemetryReceived = true;
                 SyncModelToUI();
                 AppendCsvRecordIfActive("MasterPoller Telemetry");
 
@@ -2862,7 +3032,14 @@ namespace BMS_Protocol_Simulator
 
                 if (foundPacks != null && foundPacks.Count > 0)
                 {
+                    if (_comm.TargetSlaveId != foundPacks[0])
+                    {
+                        _hasMasterTelemetryReceived = false;
+                        ClearMasterTelemetryDisplay();
+                    }
+                    _isUpdatingUi = true;
                     numSpecificId.Value = foundPacks[0];
+                    _isUpdatingUi = false;
                     _comm.TargetSlaveId = foundPacks[0];
                     MessageBox.Show(string.Format("总线扫描完成！\n\n共探测到 {0} 个在线电池包:\nID: {1}\n\n已自动将当前目标从机 ID 切换为: {2}",
                         foundPacks.Count, string.Join(", ", foundPacks.ConvertAll<string>(delegate(byte b) { return b.ToString(); }).ToArray()), foundPacks[0]),
@@ -2893,6 +3070,14 @@ namespace BMS_Protocol_Simulator
                     case 3:
                         _comm.ProtocolHandler = new PylontechAsciiHandler();
                         break;
+                    case 4:
+                        _comm.ProtocolHandler = new LibModbusHandler();
+                        break;
+                }
+                if (_comm.CurrentWorkMode == WorkMode.MasterPoller)
+                {
+                    _hasMasterTelemetryReceived = false;
+                    ClearMasterTelemetryDisplay();
                 }
             }
             UpdateProtocolBadge();
@@ -3015,6 +3200,7 @@ namespace BMS_Protocol_Simulator
             if (selectedProtStr == "GROWATT") currentSelectedProtocol = DetectedProtocolType.Growatt;
             else if (selectedProtStr == "VOLTRONIC") currentSelectedProtocol = DetectedProtocolType.Voltronic;
             else if (selectedProtStr == "PYLONTECH") currentSelectedProtocol = DetectedProtocolType.Pylontech;
+            else if (selectedProtStr == "LIB_MODBUS") currentSelectedProtocol = DetectedProtocolType.LibModbus;
 
             // 当前 UI 选中的套系
             string currentActiveProfile = _defaultConfig.ActiveProfileName ?? "3KU";
@@ -3024,7 +3210,7 @@ namespace BMS_Protocol_Simulator
             {
                 lblBannerIcon.Text = "✕";
                 lblBannerIcon.ForeColor = Color.FromArgb(185, 28, 28);
-                string detectedProtName = _lastDetectionResult.Protocol.ToString().ToUpper();
+                string detectedProtName = _lastDetectionResult.Protocol == DetectedProtocolType.LibModbus ? "LIB_MODBUS" : _lastDetectionResult.Protocol.ToString().ToUpper();
                 lblBannerText.Text = string.Format("协议不匹配: 机器为 [{0}]，当前选择 [{1}]", detectedProtName, selectedProtStr);
                 lblBannerText.ForeColor = Color.FromArgb(185, 28, 28); // 红色
                 pnlModelMatchBanner.BackColor = Color.FromArgb(254, 242, 242);
@@ -3134,7 +3320,7 @@ namespace BMS_Protocol_Simulator
                 if (this.IsDisposed) return;
 
                 // 同步 UI 协议选择
-                string targetProtName = e.Protocol.ToString().ToUpper();
+                string targetProtName = e.Protocol == DetectedProtocolType.LibModbus ? "LIB_MODBUS" : e.Protocol.ToString().ToUpper();
                 for (int i = 0; i < cboProtocol.Items.Count; i++)
                 {
                     if (cboProtocol.Items[i].ToString().Equals(targetProtName, StringComparison.OrdinalIgnoreCase))
@@ -3220,6 +3406,7 @@ namespace BMS_Protocol_Simulator
                 chkProtSys.Checked = _model.ProtSystemFault;
                 chkProtSoftStart.Checked = _model.ProtSoftStart;
             }
+            UpdateAlarmProtectionVisualStyles();
             _isUpdatingUi = false;
         }
 
@@ -3231,7 +3418,14 @@ namespace BMS_Protocol_Simulator
             TextBox tb = GetInnerTextBox(num);
             if (tb != null)
             {
-                tb.Text = (num.DecimalPlaces > 0) ? clampedVal.ToString("F" + num.DecimalPlaces) : clampedVal.ToString("F0");
+                if (_comm != null && _comm.CurrentWorkMode == WorkMode.MasterPoller && !_hasMasterTelemetryReceived)
+                {
+                    tb.Text = "";
+                }
+                else
+                {
+                    tb.Text = (num.DecimalPlaces > 0) ? clampedVal.ToString("F" + num.DecimalPlaces) : clampedVal.ToString("F0");
+                }
             }
             _committedValues[num] = clampedVal;
             _isDirty[num] = false;

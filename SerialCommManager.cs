@@ -337,13 +337,21 @@ namespace BMS_Protocol_Simulator
                                 }
                             }
 
-                            // 2. 查找合法的 8 字节 Modbus RTU 标准查询帧
+                            // 2. 查找合法的 Modbus RTU 查询帧 (8 字节 0x03/0x04 或 4 字节 0x11 读设备信息)
                             int mbIdx = -1;
-                            for (int i = 0; i <= rxLen - 8; i++)
+                            int mbFrameLen = 0;
+                            for (int i = 0; i < rxLen; i++)
                             {
-                                if (rxBuf[i + 1] == 0x03 && ModbusCrc.Check(rxBuf, 8, i))
+                                if (i <= rxLen - 8 && (rxBuf[i + 1] == 0x03 || rxBuf[i + 1] == 0x04) && ModbusCrc.Check(rxBuf, 8, i))
                                 {
                                     mbIdx = i;
+                                    mbFrameLen = 8;
+                                    break;
+                                }
+                                if (i <= rxLen - 4 && rxBuf[i] <= 15 && rxBuf[i + 1] == 0x11 && ModbusCrc.Check(rxBuf, 4, i))
+                                {
+                                    mbIdx = i;
+                                    mbFrameLen = 4;
                                     break;
                                 }
                             }
@@ -357,7 +365,7 @@ namespace BMS_Protocol_Simulator
                                     rxLen -= mbIdx;
                                 }
 
-                                int frameLen = 8;
+                                int frameLen = mbFrameLen;
                                 currentFrame = new byte[frameLen];
                                 Array.Copy(rxBuf, 0, currentFrame, 0, frameLen);
                                 Array.Copy(rxBuf, frameLen, rxBuf, 0, rxLen - frameLen);
@@ -450,6 +458,11 @@ namespace BMS_Protocol_Simulator
                                 else if (det.Protocol == DetectedProtocolType.Cvte && !(ProtocolHandler is CvteModbusHandler))
                                 {
                                     ProtocolHandler = new CvteModbusHandler();
+                                    needSwitch = true;
+                                }
+                                else if (det.Protocol == DetectedProtocolType.LibModbus && !(ProtocolHandler is LibModbusHandler))
+                                {
+                                    ProtocolHandler = new LibModbusHandler();
                                     needSwitch = true;
                                 }
 
@@ -760,13 +773,22 @@ namespace BMS_Protocol_Simulator
                                 for (int i = 0; i <= rxLen - 5; i++)
                                 {
                                     byte fc = rxBuf[i + 1];
-                                    if (fc == 0x03 && i + 2 < rxLen)
+                                    if ((fc == 0x03 || fc == 0x04 || fc == 0x11) && i + 2 < rxLen)
                                     {
                                         int candidateLen = 3 + rxBuf[i + 2] + 2;
                                         if (candidateLen >= 5 && i + candidateLen <= rxLen && ModbusCrc.Check(rxBuf, candidateLen, i))
                                         {
                                             validMbOffset = i;
                                             validMbLen = candidateLen;
+                                            break;
+                                        }
+                                    }
+                                    else if ((fc & 0x80) != 0 && i + 5 <= rxLen)
+                                    {
+                                        if (ModbusCrc.Check(rxBuf, 5, i))
+                                        {
+                                            validMbOffset = i;
+                                            validMbLen = 5;
                                             break;
                                         }
                                     }

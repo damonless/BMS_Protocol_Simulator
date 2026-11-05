@@ -456,6 +456,8 @@ namespace BMS_Protocol_Simulator
                     ushort warn = (ushort)((rxBuffer[19] << 8) | rxBuffer[20]);
                     model.WarnSingleOverVolt = (warn & 0x0001) != 0;
                     model.WarnSingleUnderVolt = (warn & 0x0002) != 0;
+                    model.WarnGlobalOverVolt = (warn & 0x0001) != 0;
+                    model.WarnGlobalUnderVolt = (warn & 0x0002) != 0;
                     model.WarnOverCurrent = (warn & 0x0004) != 0;
                     model.WarnHighTemp = (warn & 0x0008) != 0;
                     model.WarnLowTemp = (warn & 0x0010) != 0;
@@ -1300,6 +1302,12 @@ namespace BMS_Protocol_Simulator
                     model.WarnHighTemp = (s6 == 0x02 || s7 == 0x02 || s8 == 0x02 || s9 == 0x02);
                     model.WarnLowTemp = (s6 == 0x01 || s7 == 0x01 || s8 == 0x01 || s9 == 0x01);
 
+                    model.ProtOverVolt = (s0 == 0x02 || s2 == 0x02 || s0 == 0xF0 || s2 == 0xF0);
+                    model.ProtUnderVolt = (s1 == 0x01 || s3 == 0x01 || s1 == 0xF0 || s3 == 0xF0);
+                    model.ProtOverCurrent = (s4 == 0x02 || s5 == 0x02 || s4 == 0xF0 || s5 == 0xF0);
+                    model.ProtHighTemp = (s6 == 0x02 || s7 == 0x02 || s8 == 0x02 || s9 == 0x02);
+                    model.ProtUnderTemp = (s6 == 0x01 || s7 == 0x01 || s8 == 0x01 || s9 == 0x01);
+
                     decodedInfo = string.Format("[VOLTRONIC] 告警矩阵遥测更新完成 (过压={0}, 欠压={1}, 过流={2}, 温态={3})",
                         s0, s1, s4, s6);
                     return true;
@@ -1905,12 +1913,38 @@ namespace BMS_Protocol_Simulator
 
                         if (tempCount44 <= 16 && info.Length >= statusOffset44 + 4)
                         {
+                            bool cellOvWarn = false, cellUvWarn = false;
+                            for (int c = 0; c < cellCount; c++)
+                            {
+                                byte cw = 0;
+                                if (byte.TryParse(info.Substring(cellOffset + 2 + c * 2, 2), System.Globalization.NumberStyles.HexNumber, null, out cw))
+                                {
+                                    if (cw == 0x02) cellOvWarn = true;
+                                    else if (cw == 0x01) cellUvWarn = true;
+                                }
+                            }
+
+                            bool tempHtWarn = false, tempLtWarn = false;
+                            for (int t = 0; t < tempCount44; t++)
+                            {
+                                byte tw = 0;
+                                if (byte.TryParse(info.Substring(tempOffset44 + 2 + t * 2, 2), System.Globalization.NumberStyles.HexNumber, null, out tw))
+                                {
+                                    if (tw == 0x02) tempHtWarn = true;
+                                    else if (tw == 0x01) tempLtWarn = true;
+                                }
+                            }
+
                             byte currWarn = 0, voltWarn = 0, prot1 = 0;
                             byte.TryParse(info.Substring(statusOffset44, 2), System.Globalization.NumberStyles.HexNumber, null, out currWarn);
                             byte.TryParse(info.Substring(statusOffset44 + 2, 2), System.Globalization.NumberStyles.HexNumber, null, out voltWarn);
                             if (info.Length >= statusOffset44 + 6)
                                 byte.TryParse(info.Substring(statusOffset44 + 4, 2), System.Globalization.NumberStyles.HexNumber, null, out prot1);
 
+                            model.WarnSingleOverVolt = cellOvWarn;
+                            model.WarnSingleUnderVolt = cellUvWarn;
+                            model.WarnHighTemp = tempHtWarn;
+                            model.WarnLowTemp = tempLtWarn;
                             model.WarnOverCurrent = (currWarn != 0);
                             model.WarnGlobalOverVolt = (voltWarn & 0x02) != 0;
                             model.WarnGlobalUnderVolt = (voltWarn & 0x01) != 0;
@@ -2038,6 +2072,421 @@ namespace BMS_Protocol_Simulator
         }
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // 5. LIB_MODBUS (RS485 V1.30) 协议处理器 (0x04 读输入寄存器 / 0x11 读产品信息)
+    // ─────────────────────────────────────────────────────────────
+    public class LibModbusHandler : IBmsProtocolHandler
+    {
+        public string ProtocolName
+        {
+            get { return "LIB_MODBUS (RS485 V1.30)"; }
+        }
+
+        public bool TryProcessQuery(byte[] rxBuffer, int rxLength, BmsDataModel model, bool replyAllIds, int specificId, out byte[] txResponse, out string decodedInfo)
+        {
+            txResponse = null;
+            decodedInfo = "";
+
+            if (rxLength < 4 || !ModbusCrc.Check(rxBuffer, rxLength)) return false;
+
+            byte id = rxBuffer[0];
+            byte cmd = rxBuffer[1];
+
+            // 情况 A: 读产品信息 (功能码 0x11, 4 字节查询帧 [ID, 0x11, CRCH, CRCL])
+            if (cmd == 0x11 && rxLength == 4)
+            {
+                if (!replyAllIds && id != specificId)
+                {
+                    decodedInfo = string.Format("收到对 ID:{0:X2} 的读产品信息查询 (已按单包规则忽略)", id);
+                    return false;
+                }
+
+                // Payload: Model ASCII (12B) + '*' (1B) + SW Ver (2B) + '*' (1B) + HW Ver (2B) + '*' (1B) + SN ASCII (20B) + '*' (1B) = 40 字节 (0x28)
+                byte[] payload = new byte[40];
+                byte[] modelBytes = Encoding.ASCII.GetBytes("P16S50A-6232");
+                Array.Copy(modelBytes, 0, payload, 0, Math.Min(12, modelBytes.Length));
+                payload[12] = 0x2A; // '*'
+                payload[13] = 0x01; // SW Major 1
+                payload[14] = 0x00; // SW Minor 0 (V1.00)
+                payload[15] = 0x2A; // '*'
+                payload[16] = 0x01; // HW Major 1
+                payload[17] = 0x20; // HW Minor 20 (V1.20)
+                payload[18] = 0x2A; // '*'
+                byte[] snBytes = Encoding.ASCII.GetBytes("20161111011800400026");
+                Array.Copy(snBytes, 0, payload, 19, Math.Min(20, snBytes.Length));
+                payload[39] = 0x2A; // '*'
+
+                byte[] resp = new byte[3 + 40 + 2]; // 45 字节
+                resp[0] = id;
+                resp[1] = 0x11;
+                resp[2] = 40;
+                Array.Copy(payload, 0, resp, 3, 40);
+
+                ushort crc = ModbusCrc.Calculate(resp, 43);
+                resp[43] = (byte)(crc >> 8);
+                resp[44] = (byte)(crc & 0xFF);
+
+                txResponse = resp;
+                decodedInfo = string.Format("[LIB_MODBUS] 应答 ID:{0:X2} 读产品信息 (0x11) -> P16S50A-6232, SW:V1.00, HW:V1.20, SN:20161111011800400026", id);
+                return true;
+            }
+
+            // 情况 B: 读输入寄存器 (功能码 0x04, 8 字节查询帧 [ID, 0x04, AddrH, AddrL, CntH, CntL, CRCH, CRCL])
+            if (cmd == 0x04 && rxLength == 8)
+            {
+                if (!replyAllIds && id != specificId)
+                {
+                    decodedInfo = string.Format("收到对 ID:{0:X2} 的查询 (已按单包规则忽略)", id);
+                    return false;
+                }
+
+                ushort regStart = (ushort)((rxBuffer[2] << 8) | rxBuffer[3]);
+                ushort regCount = (ushort)((rxBuffer[4] << 8) | rxBuffer[5]);
+
+                if (regCount == 0 || regStart < 0x1000 || (regStart + regCount - 1) > 0x1016)
+                {
+                    txResponse = BuildExceptionFrame(id, cmd, 0x02);
+                    decodedInfo = string.Format("[LIB_MODBUS] 异常应答 ID:{0:X2} 读 0x{1:X4} (数量:{2}) -> 错误码:0x02 (非法寄存器地址)", id, regStart, regCount);
+                    return true;
+                }
+
+                int byteCount = regCount * 2;
+                byte[] resp = new byte[3 + byteCount + 2];
+                resp[0] = id;
+                resp[1] = 0x04;
+                resp[2] = (byte)byteCount;
+
+                lock (model.SyncRoot)
+                {
+                    for (int i = 0; i < regCount; i++)
+                    {
+                        ushort regAddr = (ushort)(regStart + i);
+                        ushort val = GetLibModbusRegisterValue(regAddr, model);
+                        resp[3 + i * 2] = (byte)(val >> 8);
+                        resp[3 + i * 2 + 1] = (byte)(val & 0xFF);
+                    }
+
+                    string statusTag = "";
+                    if (model.HasProtection) statusTag += string.Format(" [保护跳闸: {0}]", model.GetActiveProtectionsSummary());
+                    if (model.HasWarning) statusTag += string.Format(" [告警提示: {0}]", model.GetActiveWarningsSummary());
+
+                    decodedInfo = string.Format("[LIB_MODBUS] 应答 ID:{0:X2} 读 0x{1:X4} ({2}寄存器) -> 电压:{3:F2}V, SOC:{4:F0}%, 电流:{5:F2}A, 温度:{6:F1}°C{7}",
+                        id, regStart, regCount, model.Voltage, model.SOC, model.Current, model.Temperature, statusTag);
+                }
+
+                ushort crc = ModbusCrc.Calculate(resp, 3 + byteCount);
+                resp[3 + byteCount] = (byte)(crc >> 8);
+                resp[3 + byteCount + 1] = (byte)(crc & 0xFF);
+
+                txResponse = resp;
+                return true;
+            }
+
+            // 情况 C: 其它功能码 (当 LibModbusHandler 激活且收到合法 CRC 帧时，返回 0x01 非法功能码异常)
+            if (!replyAllIds && id != specificId) return false;
+
+            txResponse = BuildExceptionFrame(id, cmd, 0x01);
+            decodedInfo = string.Format("[LIB_MODBUS] 异常应答 ID:{0:X2} 功能码 0x{1:X2} -> 错误码:0x01 (非法功能码)", id, cmd);
+            return true;
+        }
+
+        private static byte[] BuildExceptionFrame(byte id, byte cmd, byte errCode)
+        {
+            byte[] resp = new byte[5];
+            resp[0] = id;
+            resp[1] = (byte)(cmd + 0x80);
+            resp[2] = errCode;
+            ushort crc = ModbusCrc.Calculate(resp, 3);
+            resp[3] = (byte)(crc >> 8);
+            resp[4] = (byte)(crc & 0xFF);
+            return resp;
+        }
+
+        private ushort GetLibModbusRegisterValue(ushort regAddress, BmsDataModel model)
+        {
+            switch (regAddress)
+            {
+                case 0x1000: // 电压 (10mV)
+                    return (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(model.Voltage * 100)));
+
+                case 0x1001: // 电流 (10mA, 有符号)
+                    return (ushort)((short)Math.Round(model.Current * 100));
+
+                case 0x1002: // 剩余容量 (10mAh)
+                    return (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(model.RemainingCapacity * 100)));
+
+                case 0x1003: // 电池温度1 (0.1°C, 有符号)
+                    return (ushort)((short)Math.Round(model.Temperature * 10));
+
+                case 0x1004: // 电池温度2 (0.1°C, 有符号)
+                    return (ushort)((short)Math.Round(model.Temperature * 10));
+
+                case 0x1005: // 告警标志 (Byte0=LSB, Byte1=MSB)
+                    {
+                        ushort warn = 0;
+                        if (model.WarnSingleOverVolt) warn |= 0x0001;
+                        if (model.WarnSingleUnderVolt) warn |= 0x0002;
+                        if (model.WarnGlobalOverVolt) warn |= 0x0004;
+                        if (model.WarnGlobalUnderVolt) warn |= 0x0008;
+                        if (model.WarnOverCurrent)
+                        {
+                            if (model.Current >= 0) warn |= 0x0010;
+                            if (model.Current <= 0) warn |= 0x0020;
+                        }
+                        if (model.WarnHighTemp) warn |= (0x0040 | 0x0100 | 0x0400);
+                        if (model.WarnLowTemp) warn |= (0x0080 | 0x0200);
+                        if (model.WarnLowCapacity) warn |= 0x0800;
+                        return warn;
+                    }
+
+                case 0x1006: // 保护标志 (Byte0=LSB, Byte1=MSB)
+                    {
+                        ushort prot = 0;
+                        if (model.ProtOverVolt) prot |= (0x0001 | 0x0004);
+                        if (model.ProtUnderVolt) prot |= (0x0002 | 0x0008);
+                        if (model.ProtShortCircuit) prot |= 0x0010;
+                        if (model.ProtOverCurrent) prot |= 0x0020;
+                        if (model.ProtHighTemp) prot |= (0x0040 | 0x0100);
+                        if (model.ProtUnderTemp) prot |= (0x0080 | 0x0200);
+                        return prot;
+                    }
+
+                case 0x1007: // 故障/状态标志 (Byte0=Fault LSB, Byte1=Status MSB)
+                    {
+                        ushort fs = 0;
+                        if (model.ProtSystemFault) fs |= 0x0001;
+                        if (model.ProtSystemFault && (model.ProtHighTemp || model.ProtUnderTemp)) fs |= 0x0002;
+                        if (model.Current > 0.05) fs |= 0x0100;
+                        else if (model.Current < -0.05) fs |= 0x0200;
+                        if (model.CanCharge) fs |= 0x0400;
+                        if (model.CanDischarge) fs |= 0x0800;
+                        if (model.CanCharge && model.MaxChargeCurrent > 0) fs |= 0x1000;
+                        return fs;
+                    }
+
+                case 0x1008: // SOC (0.1%)
+                    return (ushort)Math.Max(0, Math.Min(1000, (int)Math.Round(model.SOC * 10)));
+
+                case 0x1009: // SOH (0.1%)
+                    return (ushort)Math.Max(0, Math.Min(1000, (int)Math.Round(model.SOH * 10)));
+
+                case 0x100A: // 满充容量 (10mAh)
+                    return (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(model.FullCapacity * 100)));
+
+                case 0x100B: // 循环次数 (Cycle Count)
+                    return (ushort)Math.Max(0, Math.Min(65535, model.CycleCount));
+
+                case 0x100C: // 最大充电电流 (10mA)
+                    return model.CanCharge ? (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(model.MaxChargeCurrent * 100))) : (ushort)0;
+
+                case 0x100D: // 最高单体电压 (mV)
+                    {
+                        int nCells = model.Voltage > 35.0 ? 16 : 8;
+                        ushort maxMv, minMv;
+                        model.GetCellMillivolts(0, nCells, out maxMv, out minMv);
+                        return maxMv;
+                    }
+
+                case 0x100E: // 最低单体电压 (mV)
+                    {
+                        int nCells = model.Voltage > 35.0 ? 16 : 8;
+                        ushort maxMv, minMv;
+                        model.GetCellMillivolts(1, nCells, out maxMv, out minMv);
+                        return minMv;
+                    }
+
+                case 0x100F: // 保留
+                    return 0x0000;
+
+                case 0x1010: // 最高单体温度 (0.1°C)
+                    return (ushort)((short)Math.Round((model.Temperature + (model.WarnHighTemp ? 2.0 : 0.5)) * 10));
+
+                case 0x1011: // 最低单体温度 (0.1°C)
+                    return (ushort)((short)Math.Round((model.Temperature - (model.WarnLowTemp ? 2.0 : 0.5)) * 10));
+
+                case 0x1012: // 环境温度 (0.1°C)
+                    return (ushort)((short)Math.Round(model.Temperature * 10));
+
+                case 0x1013: // 预留
+                    return 0x0000;
+
+                case 0x1014: // 建议恒压充电电压 CV (10mV)
+                    return (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(model.CVVoltage * 100)));
+
+                case 0x1015: // 设计容量 (10mAh)
+                    return (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(model.FullCapacity * 100)));
+
+                case 0x1016: // 预留
+                    return 0x0000;
+
+                default:
+                    return 0x0000;
+            }
+        }
+
+        public int MasterPollPhaseCount
+        {
+            get { return 1; }
+        }
+
+        public byte[] BuildMasterPollFrame(byte targetId, int pollPhase)
+        {
+            byte[] frame = new byte[8];
+            frame[0] = targetId;
+            frame[1] = 0x04;
+            frame[2] = 0x10;
+            frame[3] = 0x00;
+            frame[4] = 0x00;
+            frame[5] = 0x17; // 23 个寄存器 (0x1000 ~ 0x1016)
+            ushort crc = ModbusCrc.Calculate(frame, 6);
+            frame[6] = (byte)(crc >> 8);
+            frame[7] = (byte)(crc & 0xFF);
+            return frame;
+        }
+
+        public byte[] BuildMasterControlFrame(byte targetId, string commandType, object param, out string description)
+        {
+            description = "[LIB_MODBUS] 协议规范 (REV1.30) 为纯只读协议 (仅支持 0x04/0x11)，不支持主机写控制指令: " + commandType;
+            return null;
+        }
+
+        public bool TryDecodeMasterResponse(byte[] rxBuffer, int rxLength, BmsDataModel model, out string decodedInfo)
+        {
+            decodedInfo = "";
+            if (rxLength < 5) return false;
+            if (!ModbusCrc.Check(rxBuffer, rxLength)) return false;
+
+            byte id = rxBuffer[0];
+            byte fc = rxBuffer[1];
+
+            // 1. 异常应答帧 (0x84 / 0x91)
+            if (fc == 0x84 || fc == 0x91)
+            {
+                byte errCode = rxBuffer[2];
+                decodedInfo = string.Format("[LIB_MODBUS] 从机异常响应 ID:{0:X2}, 功能码:0x{1:X2}, 错误码:0x{2:X2} ({3})",
+                    id, fc, errCode, errCode == 0x01 ? "非法功能码" : (errCode == 0x02 ? "非法寄存器地址" : "从机异常"));
+                return true;
+            }
+
+            // 2. 0x11 产品信息应答
+            if (fc == 0x11)
+            {
+                byte byteCount = rxBuffer[2];
+                if (rxLength < 3 + byteCount + 2 || byteCount < 40) return false;
+
+                string modelStr = Encoding.ASCII.GetString(rxBuffer, 3, 12).TrimEnd('\0', ' ');
+                byte swMaj = rxBuffer[16];
+                byte swMin = rxBuffer[17];
+                byte hwMaj = rxBuffer[19];
+                byte hwMin = rxBuffer[20];
+                string snStr = Encoding.ASCII.GetString(rxBuffer, 22, 20).TrimEnd('\0', ' ');
+
+                decodedInfo = string.Format("[LIB_MODBUS] 接收从机产品信息 ID:{0:X2}: 型号={1}, 固件=V{2:X}.{3:X2}, 硬件=V{4:X}.{5:X2}, 序列号={6}",
+                    id, modelStr, swMaj, swMin, hwMaj, hwMin, snStr);
+                return true;
+            }
+
+            // 3. 0x04 输入寄存器读取应答
+            if (fc == 0x04)
+            {
+                byte byteCount = rxBuffer[2];
+                if (rxLength != 3 + byteCount + 2) return false;
+
+                lock (model.SyncRoot)
+                {
+                    if (byteCount >= 2)
+                    {
+                        // 0x1000: 电压 (10mV)
+                        model.Voltage = ((rxBuffer[3] << 8) | rxBuffer[4]) / 100.0;
+                    }
+                    if (byteCount >= 4)
+                    {
+                        // 0x1001: 电流 (10mA, 有符号)
+                        model.Current = (short)((rxBuffer[5] << 8) | rxBuffer[6]) / 100.0;
+                    }
+                    if (byteCount >= 6)
+                    {
+                        // 0x1002: 剩余容量 (10mAh)
+                        model.RemainingCapacity = ((rxBuffer[7] << 8) | rxBuffer[8]) / 100.0;
+                    }
+                    if (byteCount >= 8)
+                    {
+                        // 0x1003: 温度 (0.1°C, 有符号)
+                        model.Temperature = (short)((rxBuffer[9] << 8) | rxBuffer[10]) / 10.0;
+                    }
+                    if (byteCount >= 12)
+                    {
+                        // 0x1005: 告警标志
+                        ushort warn = (ushort)((rxBuffer[13] << 8) | rxBuffer[14]);
+                        model.WarnSingleOverVolt = (warn & 0x0001) != 0;
+                        model.WarnSingleUnderVolt = (warn & 0x0002) != 0;
+                        model.WarnGlobalOverVolt = (warn & 0x0004) != 0;
+                        model.WarnGlobalUnderVolt = (warn & 0x0008) != 0;
+                        model.WarnOverCurrent = (warn & (0x0010 | 0x0020)) != 0;
+                        model.WarnHighTemp = (warn & (0x0040 | 0x0100 | 0x0400)) != 0;
+                        model.WarnLowTemp = (warn & (0x0080 | 0x0200)) != 0;
+                        model.WarnLowCapacity = (warn & 0x0800) != 0;
+                    }
+                    if (byteCount >= 14)
+                    {
+                        // 0x1006: 保护标志
+                        ushort prot = (ushort)((rxBuffer[15] << 8) | rxBuffer[16]);
+                        model.ProtOverVolt = (prot & (0x0001 | 0x0004)) != 0;
+                        model.ProtUnderVolt = (prot & (0x0002 | 0x0008)) != 0;
+                        model.ProtShortCircuit = (prot & 0x0010) != 0;
+                        model.ProtOverCurrent = (prot & 0x0020) != 0;
+                        model.ProtHighTemp = (prot & (0x0040 | 0x0100)) != 0;
+                        model.ProtUnderTemp = (prot & (0x0080 | 0x0200)) != 0;
+                    }
+                    if (byteCount >= 16)
+                    {
+                        // 0x1007: 故障与状态标志
+                        ushort fs = (ushort)((rxBuffer[17] << 8) | rxBuffer[18]);
+                        model.ProtSystemFault = (fs & 0x0001) != 0;
+                        model.StatusChargeEnable = (fs & 0x0400) != 0;
+                        model.StatusDischargeEnable = (fs & 0x0800) != 0;
+                    }
+                    if (byteCount >= 18)
+                    {
+                        // 0x1008: SOC (0.1%)
+                        model.SOC = ((rxBuffer[19] << 8) | rxBuffer[20]) / 10.0;
+                    }
+                    if (byteCount >= 20)
+                    {
+                        // 0x1009: SOH (0.1%)
+                        model.SOH = ((rxBuffer[21] << 8) | rxBuffer[22]) / 10.0;
+                    }
+                    if (byteCount >= 22)
+                    {
+                        // 0x100A: 满充容量 (10mAh)
+                        model.FullCapacity = ((rxBuffer[23] << 8) | rxBuffer[24]) / 100.0;
+                    }
+                    if (byteCount >= 24)
+                    {
+                        // 0x100B: 循环次数
+                        model.CycleCount = (ushort)((rxBuffer[25] << 8) | rxBuffer[26]);
+                    }
+                    if (byteCount >= 26)
+                    {
+                        // 0x100C: 最大充电电流 (10mA)
+                        model.MaxChargeCurrent = ((rxBuffer[27] << 8) | rxBuffer[28]) / 100.0;
+                    }
+                    if (byteCount >= 42)
+                    {
+                        // 0x1014: 建议恒压充电电压 (10mV)
+                        model.CVVoltage = ((rxBuffer[43] << 8) | rxBuffer[44]) / 100.0;
+                    }
+                }
+
+                decodedInfo = string.Format("[LIB_MODBUS] 成功解析 0x04 应答: 电压={0:F2}V, 电流={1:F2}A, SOC={2:F1}%, 温度={3:F1}°C, 满充容量={4:F2}Ah",
+                    model.Voltage, model.Current, model.SOC, model.Temperature, model.FullCapacity);
+                return true;
+            }
+
+            return false;
+        }
+    }
+
     #region Inverter & Protocol Classifier (3KU / 6KU 机型与协议智能识别引擎)
 
     public enum InverterModel
@@ -2053,7 +2502,8 @@ namespace BMS_Protocol_Simulator
         Growatt,
         Voltronic,
         Pylontech,
-        Cvte
+        Cvte,
+        LibModbus
     }
 
     public class DetectionResult
@@ -2101,6 +2551,46 @@ namespace BMS_Protocol_Simulator
         public DetectionResult InspectFrame(byte[] buffer, int offset, int length)
         {
             if (buffer == null || length < 4) return null;
+
+            // 0. LIB_MODBUS 特征帧校验 (8 字节 0x04 读输入寄存器 或 4 字节 0x11 读产品信息)
+            if (length >= 8 && buffer[offset + 1] == 0x04 && ModbusCrc.Check(buffer, 8, offset))
+            {
+                byte slaveId = buffer[offset];
+                ushort startReg = (ushort)((buffer[offset + 2] << 8) | buffer[offset + 3]);
+                ushort regCount = (ushort)((buffer[offset + 4] << 8) | buffer[offset + 5]);
+
+                if (startReg >= 0x1000 && startReg <= 0x1016)
+                {
+                    DetectionResult res = new DetectionResult();
+                    res.SlaveId = slaveId;
+                    res.Timestamp = DateTime.Now;
+                    res.RawSignature = string.Format("LIB_MODBUS 0x04 读输入寄存器: 从机 ID={0}, 起始=0x{1:X4}, 长度={2}", slaveId, startReg, regCount);
+                    res.Protocol = DetectedProtocolType.LibModbus;
+                    res.Model = InverterModel.Unknown;
+                    res.IsSignatureConfirmed = true;
+
+                    _latchedProtocol = res.Protocol;
+                    _latchedSlaveId = slaveId;
+                    _lastDetectedTime = res.Timestamp;
+                    return res;
+                }
+            }
+            else if (length >= 4 && buffer[offset + 1] == 0x11 && ModbusCrc.Check(buffer, 4, offset))
+            {
+                byte slaveId = buffer[offset];
+                DetectionResult res = new DetectionResult();
+                res.SlaveId = slaveId;
+                res.Timestamp = DateTime.Now;
+                res.RawSignature = string.Format("LIB_MODBUS 0x11 读产品信息: 从机 ID={0}", slaveId);
+                res.Protocol = DetectedProtocolType.LibModbus;
+                res.Model = InverterModel.Unknown;
+                res.IsSignatureConfirmed = true;
+
+                _latchedProtocol = res.Protocol;
+                _latchedSlaveId = slaveId;
+                _lastDetectedTime = res.Timestamp;
+                return res;
+            }
 
             // 1. 优先尝试 Modbus RTU 校验 (8 字节标准查询: [ID, 0x03, AddrH, AddrL, LenH, LenL, CrcH, CrcL])
             if (length >= 8 && buffer[offset + 1] == 0x03 && ModbusCrc.Check(buffer, 8, offset))
@@ -2391,7 +2881,7 @@ namespace BMS_Protocol_Simulator
             }
 
             // 2. Modbus RTU / Voltronic 帧解剖
-            bool crcOk = (raw.Length >= 5) && ModbusCrc.Check(raw, raw.Length);
+            bool crcOk = (raw.Length >= 4) && ModbusCrc.Check(raw, raw.Length);
             ushort calcCrc = (raw.Length >= 3) ? ModbusCrc.Calculate(raw, raw.Length - 2) : (ushort)0;
             ushort frameCrc = (raw.Length >= 2) ? (ushort)((raw[raw.Length - 2] << 8) | raw[raw.Length - 1]) : (ushort)0;
 
@@ -2400,26 +2890,70 @@ namespace BMS_Protocol_Simulator
                 crcOk ? "✓ 校验通过 (PASS)" : "✕ 校验错误 (FAIL)", frameCrc, calcCrc));
             sb.AppendLine();
 
-            if (raw.Length == 8 && (raw[1] == 0x03 || raw[1] == 0x06 || raw[1] == 0x10))
+            if (raw.Length == 8 && (raw[1] == 0x03 || raw[1] == 0x04 || raw[1] == 0x06 || raw[1] == 0x10))
             {
                 ushort addr = (ushort)((raw[2] << 8) | raw[3]);
                 ushort valOrCount = (ushort)((raw[4] << 8) | raw[5]);
-                string fcDesc = raw[1] == 0x03 ? "0x03 (读保持寄存器)" : (raw[1] == 0x06 ? "0x06 (写单个寄存器)" : "0x10 (写多个寄存器)");
+                string fcDesc = raw[1] == 0x03 ? "0x03 (读保持寄存器)" :
+                                (raw[1] == 0x04 ? "0x04 (读输入寄存器)" :
+                                (raw[1] == 0x06 ? "0x06 (写单个寄存器)" : "0x10 (写多个寄存器)"));
                 sb.AppendLine(string.Format("• 从机地址 (Slave ID) : 0x{0:X2} ({0})", raw[0]));
                 sb.AppendLine(string.Format("• 功能码   (Function) : {0}", fcDesc));
                 sb.AppendLine(string.Format("• 目标地址 (Reg Addr) : 0x{0:X4} (十进制: {0})", addr));
-                if (raw[1] == 0x03)
+                if (raw[1] == 0x03 || raw[1] == 0x04)
                     sb.AppendLine(string.Format("• 读取数量 (Reg Cnt ) : {0} 个寄存器 ({1} Bytes)", valOrCount, valOrCount * 2));
                 else
                     sb.AppendLine(string.Format("• 写入数值 (Reg Val ) : 0x{0:X4} (无符号: {0}, 有符号: {1})", valOrCount, (short)valOrCount));
             }
-            else if (raw.Length >= 5 && raw[1] == 0x03)
+            else if (raw.Length == 4 && raw[1] == 0x11)
             {
-                // 判断是否为 Voltronic 4字节帧头 ([ID][03][LenHi][LenLo]) 或 标准 Modbus 3字节帧头 ([ID][03][ByteCount])
+                sb.AppendLine(string.Format("• 从机地址 (Slave ID) : 0x{0:X2} ({0})", raw[0]));
+                sb.AppendLine("• 功能码   (Function) : 0x11 (读设备/产品信息)");
+                sb.AppendLine("• 请求载荷 : 查询从机产品型号、软硬件版本及出厂序列号");
+            }
+            else if (raw.Length == 5 && (raw[1] & 0x80) != 0)
+            {
+                byte origFc = (byte)(raw[1] & 0x7F);
+                byte errCode = raw[2];
+                string errDesc = errCode == 0x01 ? "非法功能码 (Illegal Function)" :
+                                 errCode == 0x02 ? "非法数据地址 (Illegal Data Address)" :
+                                 errCode == 0x03 ? "非法数据值 (Illegal Data Value)" :
+                                 errCode == 0x04 ? "从机设备故障 (Slave Device Failure)" : ("错误码: 0x" + errCode.ToString("X2"));
+                sb.AppendLine(string.Format("• 从机地址 (Slave ID) : 0x{0:X2} ({0})", raw[0]));
+                sb.AppendLine(string.Format("• 异常功能码(Exception): 0x{0:X2} (对应请求功能码: 0x{1:X2})", raw[1], origFc));
+                sb.AppendLine(string.Format("• 异常代码 (Error Code): 0x{0:X2} - {1}", errCode, errDesc));
+            }
+            else if (raw.Length >= 5 && raw[1] == 0x11)
+            {
+                byte byteCount = raw[2];
+                sb.AppendLine(string.Format("• 从机地址 (Slave ID) : 0x{0:X2} ({0})", raw[0]));
+                sb.AppendLine(string.Format("• 功能码   (Function) : 0x11 (读产品信息应答, 数据长度={0} Bytes)", byteCount));
+                if (raw.Length >= 3 + byteCount + 2 && byteCount >= 40)
+                {
+                    string modelStr = Encoding.ASCII.GetString(raw, 3, 12).TrimEnd('\0', ' ');
+                    byte swMaj = raw[16];
+                    byte swMin = raw[17];
+                    byte hwMaj = raw[19];
+                    byte hwMin = raw[20];
+                    string snStr = Encoding.ASCII.GetString(raw, 22, 20).TrimEnd('\0', ' ');
+                    sb.AppendLine();
+                    sb.AppendLine("┌────────────────────┬────────────────────────────────────────┐");
+                    sb.AppendLine("│ 产品属性           │ 解析数值                               │");
+                    sb.AppendLine("├────────────────────┼────────────────────────────────────────┤");
+                    sb.AppendLine(string.Format("│ 产品型号 (Model)   │ {0,-38} │", modelStr));
+                    sb.AppendLine(string.Format("│ 固件版本 (SW Ver)  │ V{0:X}.{1:X2}                                │", swMaj, swMin));
+                    sb.AppendLine(string.Format("│ 硬件版本 (HW Ver)  │ V{0:X}.{1:X2}                                │", hwMaj, hwMin));
+                    sb.AppendLine(string.Format("│ 序列号   (SN)      │ {0,-38} │", snStr));
+                    sb.AppendLine("└────────────────────┴────────────────────────────────────────┘");
+                }
+            }
+            else if (raw.Length >= 5 && (raw[1] == 0x03 || raw[1] == 0x04))
+            {
+                // 判断是否为 Voltronic 4字节帧头 ([ID][03][LenHi][LenLo]) 或 标准 Modbus 3字节帧头 ([ID][03/04][ByteCount])
                 int dataStart = 3;
                 int regCount = raw[2] / 2;
                 bool isVoltronicHeader = false;
-                if (raw.Length >= 6)
+                if (raw[1] == 0x03 && raw.Length >= 6)
                 {
                     int vRegCount = (raw[2] << 8) | raw[3];
                     if (4 + vRegCount * 2 + 2 == raw.Length && (3 + raw[2] + 2 != raw.Length))
@@ -2431,8 +2965,9 @@ namespace BMS_Protocol_Simulator
                 }
 
                 sb.AppendLine(string.Format("• 从机地址 (Slave ID) : 0x{0:X2} ({0})", raw[0]));
+                sb.AppendLine(string.Format("• 功能码   (Function) : 0x{0:X2} ({1})", raw[1], raw[1] == 0x04 ? "读输入寄存器应答" : "读保持寄存器应答"));
                 sb.AppendLine(string.Format("• 帧头格式 (Header  ) : {0} (共 {1} 个 16-bit 寄存器字)",
-                    isVoltronicHeader ? "Voltronic 双字节长度头 [ID][03][RegHi][RegLo]" : "标准 Modbus 单字节长度头 [ID][03][ByteCnt]", regCount));
+                    isVoltronicHeader ? "Voltronic 双字节长度头 [ID][03][RegHi][RegLo]" : ("标准 Modbus 单字节长度头 [ID][0" + raw[1].ToString("X1") + "][ByteCnt]"), regCount));
                 sb.AppendLine();
                 sb.AppendLine("┌──────────┬──────────┬────────────┬────────────┬──────────────┐");
                 sb.AppendLine("│ 寄存器序 │ 十六进制 │ 无符号十进 │ 有符号十进 │ 常见缩放参考 │");
