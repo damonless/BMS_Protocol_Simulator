@@ -1,8 +1,6 @@
 using System;
-using System.IO;
 using System.Text;
 using System.Collections.Generic;
-using System.Globalization;
 
 namespace BMS_Protocol_Simulator
 {
@@ -12,7 +10,8 @@ namespace BMS_Protocol_Simulator
         GROWATT_MODBUS,
         VOLTRONIC_MODBUS,
         PYLONTECH_ASCII,
-        LIB_MODBUS
+        LIB_MODBUS,
+        JBD
     }
 
     public enum WorkMode
@@ -89,145 +88,6 @@ namespace BMS_Protocol_Simulator
                 CutoffVoltage = this.CutoffVoltage,
                 CycleCount = this.CycleCount
             };
-        }
-    }
-
-    public class BmsDefaultConfig
-    {
-        public string ActiveProfileName { get; set; }
-        public BmsParameterProfile Profile3KU { get; set; }
-        public BmsParameterProfile Profile6KU { get; set; }
-
-        public BmsParameterProfile ActiveProfile
-        {
-            get
-            {
-                if (ActiveProfileName == "6KU") return Profile6KU;
-                return Profile3KU;
-            }
-        }
-
-        public BmsDefaultConfig()
-        {
-            ActiveProfileName = "3KU";
-            Profile3KU = new BmsParameterProfile("3KU");
-            Profile6KU = new BmsParameterProfile("6KU");
-        }
-
-        public static string GetConfigFilePath()
-        {
-            return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bms_default_config.ini");
-        }
-
-        public static BmsDefaultConfig Load()
-        {
-            BmsDefaultConfig config = new BmsDefaultConfig();
-            string path = GetConfigFilePath();
-            if (!File.Exists(path))
-            {
-                config.Save();
-                return config;
-            }
-
-            try
-            {
-                string[] lines = File.ReadAllLines(path, Encoding.UTF8);
-                string currentSection = "";
-                foreach (string line in lines)
-                {
-                    string trimLine = line.Trim();
-                    if (string.IsNullOrEmpty(trimLine) || trimLine.StartsWith("#") || trimLine.StartsWith(";"))
-                        continue;
-
-                    if (trimLine.StartsWith("[") && trimLine.EndsWith("]"))
-                    {
-                        currentSection = trimLine.Substring(1, trimLine.Length - 2).Trim();
-                        continue;
-                    }
-
-                    if (!trimLine.Contains("="))
-                        continue;
-
-                    string[] parts = trimLine.Split(new char[] { '=' }, 2);
-                    string key = parts[0].Trim();
-                    string val = parts[1].Trim();
-
-                    if (key.Equals("ActiveProfile", StringComparison.OrdinalIgnoreCase))
-                    {
-                        config.ActiveProfileName = val.ToUpper().Contains("6KU") ? "6KU" : "3KU";
-                        continue;
-                    }
-
-                    BmsParameterProfile targetProfile = currentSection.Equals("Profile_6KU", StringComparison.OrdinalIgnoreCase)
-                        ? config.Profile6KU
-                        : config.Profile3KU;
-
-                    double dVal;
-                    if (double.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out dVal) ||
-                        double.TryParse(val.Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out dVal))
-                    {
-                        if (key.Equals("Voltage", StringComparison.OrdinalIgnoreCase)) targetProfile.Voltage = dVal;
-                        else if (key.Equals("Current", StringComparison.OrdinalIgnoreCase)) targetProfile.Current = dVal;
-                        else if (key.Equals("Temperature", StringComparison.OrdinalIgnoreCase)) targetProfile.Temperature = dVal;
-                        else if (key.Equals("SOC", StringComparison.OrdinalIgnoreCase)) targetProfile.SOC = dVal;
-                        else if (key.Equals("SOH", StringComparison.OrdinalIgnoreCase)) targetProfile.SOH = dVal;
-                        else if (key.Equals("RemainingCapacity", StringComparison.OrdinalIgnoreCase)) targetProfile.RemainingCapacity = dVal;
-                        else if (key.Equals("FullCapacity", StringComparison.OrdinalIgnoreCase)) targetProfile.FullCapacity = dVal;
-                        else if (key.Equals("MaxChargeCurrent", StringComparison.OrdinalIgnoreCase)) targetProfile.MaxChargeCurrent = dVal;
-                        else if (key.Equals("MaxDischargeCurrent", StringComparison.OrdinalIgnoreCase)) targetProfile.MaxDischargeCurrent = dVal;
-                        else if (key.Equals("CVVoltage", StringComparison.OrdinalIgnoreCase)) targetProfile.CVVoltage = dVal;
-                        else if (key.Equals("CutoffVoltage", StringComparison.OrdinalIgnoreCase)) targetProfile.CutoffVoltage = dVal;
-                        else if (key.Equals("CycleCount", StringComparison.OrdinalIgnoreCase)) targetProfile.CycleCount = (int)Math.Round(dVal);
-                    }
-                }
-            }
-            catch { }
-
-            return config;
-        }
-
-        public void Save()
-        {
-            try
-            {
-                string path = GetConfigFilePath();
-                StringBuilder sb = new StringBuilder();
-                sb.AppendLine("# BMS Simulator Multi-Profile Default Parameters Config");
-                sb.AppendLine("ActiveProfile=" + ActiveProfileName);
-                sb.AppendLine();
-
-                sb.AppendLine("[Profile_3KU]");
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "Voltage={0:F2}", Profile3KU.Voltage));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "Current={0:F2}", Profile3KU.Current));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "Temperature={0:F1}", Profile3KU.Temperature));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "SOC={0:F1}", Profile3KU.SOC));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "SOH={0:F0}", Profile3KU.SOH));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "RemainingCapacity={0:F1}", Profile3KU.RemainingCapacity));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "FullCapacity={0:F1}", Profile3KU.FullCapacity));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "MaxChargeCurrent={0:F1}", Profile3KU.MaxChargeCurrent));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "MaxDischargeCurrent={0:F1}", Profile3KU.MaxDischargeCurrent));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "CVVoltage={0:F2}", Profile3KU.CVVoltage));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "CutoffVoltage={0:F2}", Profile3KU.CutoffVoltage));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "CycleCount={0}", Profile3KU.CycleCount));
-                sb.AppendLine();
-
-                sb.AppendLine("[Profile_6KU]");
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "Voltage={0:F2}", Profile6KU.Voltage));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "Current={0:F2}", Profile6KU.Current));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "Temperature={0:F1}", Profile6KU.Temperature));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "SOC={0:F1}", Profile6KU.SOC));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "SOH={0:F0}", Profile6KU.SOH));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "RemainingCapacity={0:F1}", Profile6KU.RemainingCapacity));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "FullCapacity={0:F1}", Profile6KU.FullCapacity));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "MaxChargeCurrent={0:F1}", Profile6KU.MaxChargeCurrent));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "MaxDischargeCurrent={0:F1}", Profile6KU.MaxDischargeCurrent));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "CVVoltage={0:F2}", Profile6KU.CVVoltage));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "CutoffVoltage={0:F2}", Profile6KU.CutoffVoltage));
-                sb.AppendLine(string.Format(CultureInfo.InvariantCulture, "CycleCount={0}", Profile6KU.CycleCount));
-
-                File.WriteAllText(path, sb.ToString(), Encoding.UTF8);
-            }
-            catch { }
         }
     }
 
@@ -388,17 +248,18 @@ namespace BMS_Protocol_Simulator
             ProtSoftStart = false;
         }
 
-        public BmsDataModel()
+        public string ActiveProfileName { get; private set; }
+
+        public void ApplyProfile(string profileName)
         {
-            ApplyDefaultConfig(BmsDefaultConfig.Load().ActiveProfile);
+            string target = (profileName != null && profileName.ToUpperInvariant().Contains("6KU")) ? "6KU" : "3KU";
+            ActiveProfileName = target;
+            ApplyDefaultConfig(new BmsParameterProfile(target));
         }
 
-        public void ApplyDefaultConfig(BmsDefaultConfig config)
+        public BmsDataModel()
         {
-            if (config != null)
-            {
-                ApplyDefaultConfig(config.ActiveProfile);
-            }
+            ApplyProfile("3KU");
         }
 
         public void ApplyDefaultConfig(BmsParameterProfile profile)
@@ -406,6 +267,8 @@ namespace BMS_Protocol_Simulator
             if (profile == null) return;
             lock (_lock)
             {
+                if (!string.IsNullOrEmpty(profile.ProfileName)) ActiveProfileName = profile.ProfileName;
+
                 Voltage = profile.Voltage;
                 Current = profile.Current;
                 Temperature = profile.Temperature;

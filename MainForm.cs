@@ -42,14 +42,7 @@ namespace BMS_Protocol_Simulator
         }
     }
 
-    public enum ValidationLevel
-    {
-        Normal,     // 正常参数 (绿框)
-        Extreme,    // 极限/边界参数 (黄框提示，允许生效)
-        Invalid     // 非法/逻辑矛盾参数 (红框拦截，自动回滚)
-    }
-
-    // ── 应用程序图标智能辅助加载与内置渲染器 ──
+    // ── 应用程序图标辅助加载器 ──
     public static class AppIconHelper
     {
         private static Icon _cachedIcon;
@@ -77,69 +70,6 @@ namespace BMS_Protocol_Simulator
                 if (assoc != null)
                 {
                     _cachedIcon = assoc;
-                    return _cachedIcon;
-                }
-            }
-            catch { }
-
-            // 3. 运行时内存生成后备图标 (暗黑科技蓝盾板 + 绿蓝渐变电芯 + 闪电)
-            try
-            {
-                using (Bitmap bmp = new Bitmap(48, 48))
-                using (Graphics g = Graphics.FromImage(bmp))
-                {
-                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                    g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-
-                    // 背景卡片
-                    using (SolidBrush bgBrush = new SolidBrush(Color.FromArgb(15, 23, 42)))
-                    using (Pen bgPen = new Pen(Color.FromArgb(56, 189, 248), 2f))
-                    {
-                        System.Drawing.Drawing2D.GraphicsPath path = new System.Drawing.Drawing2D.GraphicsPath();
-                        int r = 10;
-                        path.AddArc(2, 2, r * 2, r * 2, 180, 90);
-                        path.AddArc(46 - r * 2, 2, r * 2, r * 2, 270, 90);
-                        path.AddArc(46 - r * 2, 46 - r * 2, r * 2, r * 2, 0, 90);
-                        path.AddArc(2, 46 - r * 2, r * 2, r * 2, 90, 90);
-                        path.CloseFigure();
-                        g.FillPath(bgBrush, path);
-                        g.DrawPath(bgPen, path);
-                    }
-
-                    // 电池外壳
-                    using (Pen bPen = new Pen(Color.FromArgb(14, 165, 233), 2f))
-                    using (SolidBrush capBrush = new SolidBrush(Color.FromArgb(14, 165, 233)))
-                    {
-                        g.FillRectangle(capBrush, 20, 7, 8, 2);
-                        g.DrawRectangle(bPen, 14, 9, 20, 30);
-                    }
-
-                    // 电芯能量条
-                    using (SolidBrush b1 = new SolidBrush(Color.FromArgb(16, 185, 129)))
-                    using (SolidBrush b2 = new SolidBrush(Color.FromArgb(6, 182, 212)))
-                    using (SolidBrush b3 = new SolidBrush(Color.FromArgb(14, 165, 233)))
-                    {
-                        g.FillRectangle(b1, 16, 31, 16, 6);
-                        g.FillRectangle(b2, 16, 22, 16, 6);
-                        g.FillRectangle(b3, 16, 13, 16, 6);
-                    }
-
-                    // 闪电符号
-                    Point[] bolt = new Point[] {
-                        new Point(27, 10),
-                        new Point(18, 23),
-                        new Point(24, 23),
-                        new Point(20, 37),
-                        new Point(30, 21),
-                        new Point(25, 21)
-                    };
-                    using (SolidBrush boltBrush = new SolidBrush(Color.FromArgb(250, 204, 21)))
-                    {
-                        g.FillPolygon(boltBrush, bolt);
-                    }
-
-                    IntPtr hIcon = bmp.GetHicon();
-                    _cachedIcon = (Icon)Icon.FromHandle(hIcon).Clone();
                     return _cachedIcon;
                 }
             }
@@ -291,296 +221,6 @@ namespace BMS_Protocol_Simulator
         }
     }
 
-    // ── 默认值配置对话框 (支持 3KU 与 6KU 双套系) ──
-    public class DefaultConfigDialog : Form
-    {
-        private ComboBox cboProfileSelect;
-        private NumericUpDown numDefVoltage, numDefCurrent, numDefTemp, numDefSoc, numDefSoh;
-        private NumericUpDown numDefRemCap, numDefFullCap, numDefMaxChgI, numDefMaxDisI, numDefCvVolt, numDefCutoffVolt, numDefCycles;
-
-        private BmsParameterProfile _editing3KU;
-        private BmsParameterProfile _editing6KU;
-        private string _currentlyDisplayedProfile;
-        private string _originalActiveProfileName;
-        private bool _isSwitchingProfile = false;
-
-        public BmsDefaultConfig ResultConfig { get; private set; }
-
-        public DefaultConfigDialog(BmsDefaultConfig current)
-        {
-            ResultConfig = current ?? new BmsDefaultConfig();
-            _originalActiveProfileName = ResultConfig.ActiveProfileName;
-            _editing3KU = ResultConfig.Profile3KU != null ? ResultConfig.Profile3KU.Clone() : new BmsParameterProfile("3KU");
-            _editing6KU = ResultConfig.Profile6KU != null ? ResultConfig.Profile6KU.Clone() : new BmsParameterProfile("6KU");
-            _currentlyDisplayedProfile = ResultConfig.ActiveProfileName ?? "3KU";
-
-            BuildDialogUI();
-            LoadProfileToUI(_currentlyDisplayedProfile);
-        }
-
-        private void BuildDialogUI()
-        {
-            this.Text = "默认参数配置 (3KU / 6KU 双套系管理)";
-            this.ClientSize = new Size(620, 365);
-            this.FormBorderStyle = FormBorderStyle.FixedDialog;
-            this.StartPosition = FormStartPosition.CenterParent;
-            this.MaximizeBox = false;
-            this.MinimizeBox = false;
-            this.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular);
-
-            try
-            {
-                Icon icon = AppIconHelper.GetAppIcon();
-                if (icon != null) this.Icon = icon;
-            }
-            catch { }
-
-            // ── 顶部套系选择栏 ──
-            Panel pnlTop = new Panel { Dock = DockStyle.Top, Height = 48, Padding = new Padding(12, 10, 12, 6) };
-            Label lblProfile = new Label { Text = "配置套系:", AutoSize = true, Location = new Point(12, 14) };
-            
-            cboProfileSelect = new ComboBox
-            {
-                DropDownStyle = ComboBoxStyle.DropDownList,
-                Width = 240,
-                Location = new Point(80, 10),
-                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold)
-            };
-            cboProfileSelect.Items.Add("3KU 默认参数套系");
-            cboProfileSelect.Items.Add("6KU 默认参数套系");
-            cboProfileSelect.SelectedIndex = _currentlyDisplayedProfile == "6KU" ? 1 : 0;
-
-            Label lblTip = new Label
-            {
-                Text = "💡可分别编辑3/6KU默认值并保存。",
-                AutoSize = true,
-                Location = new Point(330, 14),
-                ForeColor = Color.DimGray,
-                Font = new Font("Microsoft YaHei UI", 8.5f)
-            };
-
-            cboProfileSelect.SelectedIndexChanged += delegate(object s, EventArgs e) {
-                if (_isSwitchingProfile) return;
-                string newProfile = cboProfileSelect.SelectedIndex == 1 ? "6KU" : "3KU";
-                if (newProfile != _currentlyDisplayedProfile)
-                {
-                    if (!SaveUIToCurrentProfile())
-                    {
-                        _isSwitchingProfile = true;
-                        cboProfileSelect.SelectedIndex = _currentlyDisplayedProfile == "6KU" ? 1 : 0;
-                        _isSwitchingProfile = false;
-                        return;
-                    }
-                    _currentlyDisplayedProfile = newProfile;
-                    LoadProfileToUI(newProfile);
-                }
-            };
-
-            pnlTop.Controls.Add(lblProfile);
-            pnlTop.Controls.Add(cboProfileSelect);
-            pnlTop.Controls.Add(lblTip);
-
-            // ── 底部操作栏 ──
-            Panel pnlBottom = new Panel { Dock = DockStyle.Bottom, Height = 48 };
-            Button btnSave = new Button { Text = "保存默认值", Width = 110, Height = 28, Location = new Point(190, 10), DialogResult = DialogResult.OK };
-            btnSave.Click += delegate(object s, EventArgs e) {
-                if (!SaveUIToCurrentProfile())
-                {
-                    this.DialogResult = DialogResult.None;
-                    return;
-                }
-
-                // 校验 3KU 与 6KU 两个套系合法性
-                if (!ValidateProfile(_editing3KU, "3KU") || !ValidateProfile(_editing6KU, "6KU"))
-                {
-                    this.DialogResult = DialogResult.None;
-                    return;
-                }
-
-                ResultConfig.ActiveProfileName = _originalActiveProfileName;
-                ResultConfig.Profile3KU = _editing3KU;
-                ResultConfig.Profile6KU = _editing6KU;
-                ResultConfig.Save();
-            };
-
-            Button btnCancel = new Button { Text = "取消", Width = 80, Height = 28, Location = new Point(320, 10), DialogResult = DialogResult.Cancel };
-            pnlBottom.Controls.Add(btnSave);
-            pnlBottom.Controls.Add(btnCancel);
-
-            // ── 中间 6 行参数网格 ──
-            TableLayoutPanel grid = new TableLayoutPanel();
-            grid.Dock = DockStyle.Fill;
-            grid.RowCount = 6;
-            grid.ColumnCount = 4;
-            grid.Padding = new Padding(12, 4, 12, 0);
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 145f));
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 145f));
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
-
-            for (int i = 0; i < 6; i++)
-            {
-                grid.RowStyles.Add(new RowStyle(SizeType.Percent, 16.666f));
-            }
-
-            Func<string, Label> createLbl = delegate(string text) {
-                return new Label {
-                    Text = text,
-                    Dock = DockStyle.Fill,
-                    TextAlign = ContentAlignment.MiddleRight,
-                    AutoSize = false,
-                    Margin = new Padding(0, 0, 4, 0)
-                };
-            };
-
-            Func<NumericUpDown, NumericUpDown> setupNum = delegate(NumericUpDown num) {
-                num.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-                num.Margin = new Padding(2, 0, 12, 0);
-                return num;
-            };
-
-            // 行 0: 电压 / 电流
-            grid.Controls.Add(createLbl("电池总电压 (V):"), 0, 0);
-            numDefVoltage = setupNum(new NumericUpDown { DecimalPlaces = 2, Minimum = 0, Maximum = 150, Increment = 0.1M });
-            grid.Controls.Add(numDefVoltage, 1, 0);
-
-            grid.Controls.Add(createLbl("充放电流 (A):"), 2, 0);
-            numDefCurrent = setupNum(new NumericUpDown { DecimalPlaces = 2, Minimum = -500, Maximum = 500, Increment = 0.5M });
-            grid.Controls.Add(numDefCurrent, 3, 0);
-
-            // 行 1: SOC / SOH
-            grid.Controls.Add(createLbl("电池 SOC (%):"), 0, 1);
-            numDefSoc = setupNum(new NumericUpDown { DecimalPlaces = 1, Minimum = 0, Maximum = 100, Increment = 1M });
-            grid.Controls.Add(numDefSoc, 1, 1);
-
-            grid.Controls.Add(createLbl("健康度 SOH (%):"), 2, 1);
-            numDefSoh = setupNum(new NumericUpDown { DecimalPlaces = 0, Minimum = 0, Maximum = 100, Increment = 1M });
-            grid.Controls.Add(numDefSoh, 3, 1);
-
-            // 行 2: CV 恒压点 / 放电截止点
-            grid.Controls.Add(createLbl("CV 恒压点 (V):"), 0, 2);
-            numDefCvVolt = setupNum(new NumericUpDown { DecimalPlaces = 2, Minimum = 0, Maximum = 150, Increment = 0.1M });
-            grid.Controls.Add(numDefCvVolt, 1, 2);
-
-            grid.Controls.Add(createLbl("放电截止点 (V):"), 2, 2);
-            numDefCutoffVolt = setupNum(new NumericUpDown { DecimalPlaces = 2, Minimum = 0, Maximum = 150, Increment = 0.1M });
-            grid.Controls.Add(numDefCutoffVolt, 3, 2);
-
-            // 行 3: 剩余容量 / 满充容量
-            grid.Controls.Add(createLbl("剩余容量 (Ah):"), 0, 3);
-            numDefRemCap = setupNum(new NumericUpDown { DecimalPlaces = 1, Minimum = 0, Maximum = 5000, Increment = 5M });
-            grid.Controls.Add(numDefRemCap, 1, 3);
-
-            grid.Controls.Add(createLbl("满充容量 (Ah):"), 2, 3);
-            numDefFullCap = setupNum(new NumericUpDown { DecimalPlaces = 1, Minimum = 0.1M, Maximum = 5000, Increment = 5M });
-            grid.Controls.Add(numDefFullCap, 3, 3);
-
-            // 行 4: 最大充电电流 / 最大放电电流
-            grid.Controls.Add(createLbl("最大充电电流 (A):"), 0, 4);
-            numDefMaxChgI = setupNum(new NumericUpDown { DecimalPlaces = 1, Minimum = 0, Maximum = 500, Increment = 5M });
-            grid.Controls.Add(numDefMaxChgI, 1, 4);
-
-            grid.Controls.Add(createLbl("最大放电电流 (A):"), 2, 4);
-            numDefMaxDisI = setupNum(new NumericUpDown { DecimalPlaces = 1, Minimum = 0, Maximum = 500, Increment = 5M });
-            grid.Controls.Add(numDefMaxDisI, 3, 4);
-
-            // 行 5: 最高温度 / 循环次数
-            grid.Controls.Add(createLbl("最高温度 (°C):"), 0, 5);
-            numDefTemp = setupNum(new NumericUpDown { DecimalPlaces = 1, Minimum = -40, Maximum = 120, Increment = 0.5M });
-            grid.Controls.Add(numDefTemp, 1, 5);
-
-            grid.Controls.Add(createLbl("循环次数 (次):"), 2, 5);
-            numDefCycles = setupNum(new NumericUpDown { DecimalPlaces = 0, Minimum = 0, Maximum = 65535, Increment = 10M });
-            grid.Controls.Add(numDefCycles, 3, 5);
-
-            this.Controls.Add(grid);
-            this.Controls.Add(pnlTop);
-            this.Controls.Add(pnlBottom);
-        }
-
-        private void LoadProfileToUI(string profileName)
-        {
-            BmsParameterProfile profile = profileName == "6KU" ? _editing6KU : _editing3KU;
-            numDefVoltage.Value = (decimal)profile.Voltage;
-            numDefCurrent.Value = (decimal)profile.Current;
-            numDefTemp.Value = (decimal)profile.Temperature;
-            numDefSoc.Value = (decimal)profile.SOC;
-            numDefSoh.Value = (decimal)profile.SOH;
-            numDefRemCap.Value = (decimal)profile.RemainingCapacity;
-            numDefFullCap.Value = (decimal)profile.FullCapacity;
-            numDefMaxChgI.Value = (decimal)profile.MaxChargeCurrent;
-            numDefMaxDisI.Value = (decimal)profile.MaxDischargeCurrent;
-            numDefCvVolt.Value = (decimal)profile.CVVoltage;
-            numDefCutoffVolt.Value = (decimal)profile.CutoffVoltage;
-            numDefCycles.Value = (decimal)profile.CycleCount;
-        }
-
-        private bool SaveUIToCurrentProfile()
-        {
-            BmsParameterProfile profile = _currentlyDisplayedProfile == "6KU" ? _editing6KU : _editing3KU;
-
-            if (numDefVoltage.Value <= 0)
-            {
-                MessageBox.Show("[" + _currentlyDisplayedProfile + "] 电池总电压必须大于 0V！", "参数范围校验", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return false;
-            }
-            if (numDefCvVolt.Value <= 0)
-            {
-                MessageBox.Show("[" + _currentlyDisplayedProfile + "] CV 恒压点必须大于 0V！", "参数范围校验", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return false;
-            }
-            if (numDefCutoffVolt.Value <= 0)
-            {
-                MessageBox.Show("[" + _currentlyDisplayedProfile + "] 放电截止点必须大于 0V！", "参数范围校验", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return false;
-            }
-            if (numDefCutoffVolt.Value >= numDefCvVolt.Value)
-            {
-                MessageBox.Show("[" + _currentlyDisplayedProfile + "] 放电截止点不能大于或等于 CV 恒压充电点！", "参数逻辑校验", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return false;
-            }
-            if (numDefFullCap.Value <= 0)
-            {
-                MessageBox.Show("[" + _currentlyDisplayedProfile + "] 满充容量必须大于 0Ah！", "参数范围校验", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return false;
-            }
-            if (numDefRemCap.Value > numDefFullCap.Value)
-            {
-                numDefRemCap.Value = numDefFullCap.Value;
-            }
-
-            profile.Voltage = (double)numDefVoltage.Value;
-            profile.Current = (double)numDefCurrent.Value;
-            profile.Temperature = (double)numDefTemp.Value;
-            profile.SOC = (double)numDefSoc.Value;
-            profile.SOH = (double)numDefSoh.Value;
-            profile.RemainingCapacity = (double)numDefRemCap.Value;
-            profile.FullCapacity = (double)numDefFullCap.Value;
-            profile.MaxChargeCurrent = (double)numDefMaxChgI.Value;
-            profile.MaxDischargeCurrent = (double)numDefMaxDisI.Value;
-            profile.CVVoltage = (double)numDefCvVolt.Value;
-            profile.CutoffVoltage = (double)numDefCutoffVolt.Value;
-            profile.CycleCount = (int)numDefCycles.Value;
-
-            return true;
-        }
-
-        private bool ValidateProfile(BmsParameterProfile profile, string name)
-        {
-            if (profile.Voltage <= 0 || profile.CVVoltage <= 0 || profile.CutoffVoltage <= 0 || profile.FullCapacity <= 0)
-            {
-                MessageBox.Show("[" + name + "] 参数存在非法数值，请检查！", "校验失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return false;
-            }
-            if (profile.CutoffVoltage >= profile.CVVoltage)
-            {
-                MessageBox.Show("[" + name + "] 放电截止点不能大于或等于 CV 恒压充电点！", "校验失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return false;
-            }
-            return true;
-        }
-    }
-
     // ── 报文深度解剖弹窗 (双击实时监视器任意报文行触发) ──
     public class FrameInspectorDialog : Form
     {
@@ -631,53 +271,6 @@ namespace BMS_Protocol_Simulator
         }
     }
 
-    // ── 主机模式写参数快捷输入对话框 ──
-    public class MasterParamInputDialog : Form
-    {
-        private NumericUpDown numInput;
-        public double ResultValue { get; private set; }
-
-        public MasterParamInputDialog(string title, string promptLabel, double initVal, double minVal, double maxVal, int decimals)
-        {
-            this.Text = title;
-            this.ClientSize = new Size(340, 125);
-            this.FormBorderStyle = FormBorderStyle.FixedDialog;
-            this.StartPosition = FormStartPosition.CenterParent;
-            this.MaximizeBox = false;
-            this.MinimizeBox = false;
-            this.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular);
-
-            try
-            {
-                Icon icon = AppIconHelper.GetAppIcon();
-                if (icon != null) this.Icon = icon;
-            }
-            catch { }
-
-            Label lbl = new Label { Text = promptLabel, AutoSize = true, Location = new Point(20, 24) };
-            numInput = new NumericUpDown
-            {
-                DecimalPlaces = decimals,
-                Minimum = (decimal)minVal,
-                Maximum = (decimal)maxVal,
-                Value = (decimal)Math.Max(minVal, Math.Min(maxVal, initVal)),
-                Increment = decimals == 2 ? 0.2M : 5M,
-                Width = 120,
-                Location = new Point(185, 21)
-            };
-
-            Button btnOk = new Button { Text = "立即下发", Width = 88, Height = 28, Location = new Point(75, 72), DialogResult = DialogResult.OK };
-            btnOk.Click += delegate(object s, EventArgs e) {
-                ResultValue = (double)numInput.Value;
-            };
-            Button btnCancel = new Button { Text = "取消", Width = 78, Height = 28, Location = new Point(180, 72), DialogResult = DialogResult.Cancel };
-
-            this.AcceptButton = btnOk;
-            this.CancelButton = btnCancel;
-            this.Controls.AddRange(new Control[] { lbl, numInput, btnOk, btnCancel });
-        }
-    }
-
     public class MainForm : Form
     {
         // ── Win32 API 锁定与双向防闪烁滚动 ──
@@ -698,11 +291,10 @@ namespace BMS_Protocol_Simulator
         private const int EM_GETLINECOUNT = 0x00BA;
 
         private BmsDataModel _model;
-        private BmsDefaultConfig _defaultConfig;
         private SerialCommManager _comm;
-        private ToolTip _paramTip;
         private SplitContainer splitMain;
-        private Button btnApplyProfile;
+        private Button btnProfile3KU;
+        private Button btnProfile6KU;
 
         // ── 顶部配置栏控件 ──
         private ComboBox cboPort;
@@ -717,7 +309,6 @@ namespace BMS_Protocol_Simulator
 
         // ── 主机与从机模式专属控制栏控件 ──
         private Label lblPollInterval;
-        private Label lblSlaveHint;
         private CheckBox chkSimSilence;
         private CheckBox chkSimCrcErr;
         private Label lblSimDelay;
@@ -728,12 +319,7 @@ namespace BMS_Protocol_Simulator
         private ComboBox cboPollInterval;
         private Button btnPollPause;
         private Button btnSinglePoll;
-        private Button btnMasterCtrl;
-        private Panel pnlCombo;
         private Label lblHint;
-        private Button btnGear;
-        private CheckBox chkDynamicSim;
-        private Timer _dynamicSimTimer;
         private FlowLayoutPanel flpQuickPresets;
 
         // ── 模拟量控件 ──
@@ -761,23 +347,14 @@ namespace BMS_Protocol_Simulator
         private Label lblRxCount, lblTxCount, lblErrCount, lblLatency;
         private CheckBox chkAutoScroll, chkShowTime, chkShowHex, chkFilterAlarmOnly;
         private TextBox txtLogFilter;
-        private Button btnClearLog, btnExportLog, btnCsvRecord;
-        private string _csvRecordPath = null;
-        private readonly object _csvLock = new object();
+        private Button btnClearLog, btnExportLog;
 
         // ── 状态栏 ──
         private StatusStrip statusStrip;
         private ToolStripStatusLabel lblStatusText, lblProtocolBadge;
 
-        // ── 智能机型与协议识别状态横幅 ──
-        private Panel pnlBannerContainer;
-        private Panel pnlModelMatchBanner;
-        private Label lblBannerIcon;
-        private Label lblBannerText;
-        private Button btnQuickFix;
+        // ── 智能机型与协议自适应识别 ──
         private CheckBox chkAutoAdapt;
-        private ToolTip _bannerTip;
-        private DetectionResult _lastDetectionResult = null;
 
         private bool _isUpdatingUi = false;
         private bool _hasMasterTelemetryReceived = false;
@@ -787,25 +364,19 @@ namespace BMS_Protocol_Simulator
             this.KeyPreview = true;
             this.KeyDown += MainForm_KeyDown;
 
-            _bannerTip = new ToolTip { ShowAlways = true, InitialDelay = 300, AutoPopDelay = 8000 };
-            _defaultConfig = BmsDefaultConfig.Load();
             _model = new BmsDataModel();
             _comm = new SerialCommManager(_model);
             _comm.OnLogEvent += Comm_OnLogEvent;
             _comm.OnStatusChanged += Comm_OnStatusChanged;
             _comm.OnMasterTelemetryUpdated += Comm_OnMasterTelemetryUpdated;
             _comm.OnScanPacksCompleted += Comm_OnScanPacksCompleted;
-            _comm.OnInverterDetected += Comm_OnInverterDetected;
             _comm.OnAutoAdapted += Comm_OnAutoAdapted;
-
-            _dynamicSimTimer = new Timer { Interval = 1000 };
-            _dynamicSimTimer.Tick += DynamicSimTimer_Tick;
 
             BuildUI();
             RefreshPorts();
             SyncModelToUI();
             UpdateWorkModeUI();
-            UpdateModelMatchBanner();
+            UpdateProtocolControlStates();
         }
 
         private void BuildUI()
@@ -898,7 +469,8 @@ namespace BMS_Protocol_Simulator
                 "GROWATT",
                 "VOLTRONIC",
                 "PYLONTECH",
-                "LIB_MODBUS"
+                "LIB_MODBUS",
+                "JBD"
             });
             cboProtocol.SelectedIndex = 0;
             cboProtocol.SelectedIndexChanged += CboProtocol_SelectedIndexChanged;
@@ -1017,16 +589,6 @@ namespace BMS_Protocol_Simulator
             };
             flpTopRow2.Controls.Add(cboCellDelta);
 
-            lblSlaveHint = new Label
-            {
-                Text = "",
-                AutoSize = true,
-                ForeColor = Color.DimGray,
-                Margin = new Padding(2, 6, 2, 0),
-                Visible = false
-            };
-            flpTopRow2.Controls.Add(lblSlaveHint);
-
             btnScanPacks = new Button { Text = "扫描从机", Width = 72, Height = 25, Margin = new Padding(4, 2, 6, 0), Visible = false };
             btnScanPacks.Click += delegate(object s, EventArgs e) {
                 if (!_comm.IsOpen) { MessageBox.Show("请先打开串口再执行扫描！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
@@ -1072,49 +634,6 @@ namespace BMS_Protocol_Simulator
                 _comm.TriggerSinglePoll();
             };
             flpTopRow2.Controls.Add(btnSinglePoll);
-
-            // 主机控制指令下拉菜单按钮
-            btnMasterCtrl = new Button { Text = "写控制 ▾", Width = 76, Height = 25, Margin = new Padding(2, 2, 6, 0), Visible = false };
-            ContextMenuStrip menuMasterCtrl = new ContextMenuStrip { Font = new Font("Microsoft YaHei UI", 9F), ShowImageMargin = false };
-            ToolStripMenuItem miWriteChgI = new ToolStripMenuItem("写最大充电电流 (A)...");
-            miWriteChgI.Click += delegate(object s, EventArgs e) {
-                if (!_comm.IsOpen) { MessageBox.Show("请先打开串口！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
-                using (MasterParamInputDialog dlg = new MasterParamInputDialog("下发最大充电电流", "目标最大充电电流 (A):", (double)numMaxChgI.Value, 0, 500, 1))
-                {
-                    if (dlg.ShowDialog(this) == DialogResult.OK) _comm.SendMasterControl("WRITE_MAX_CHG_CURRENT", dlg.ResultValue);
-                }
-            };
-            ToolStripMenuItem miWriteDisI = new ToolStripMenuItem("写最大放电电流 (A)...");
-            miWriteDisI.Click += delegate(object s, EventArgs e) {
-                if (!_comm.IsOpen) { MessageBox.Show("请先打开串口！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
-                using (MasterParamInputDialog dlg = new MasterParamInputDialog("下发最大放电电流", "目标最大放电电流 (A):", (double)numMaxDisI.Value, 0, 500, 1))
-                {
-                    if (dlg.ShowDialog(this) == DialogResult.OK) _comm.SendMasterControl("WRITE_MAX_DIS_CURRENT", dlg.ResultValue);
-                }
-            };
-            ToolStripMenuItem miWriteCv = new ToolStripMenuItem("写 CV 恒压点 (V)...");
-            miWriteCv.Click += delegate(object s, EventArgs e) {
-                if (!_comm.IsOpen) { MessageBox.Show("请先打开串口！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
-                using (MasterParamInputDialog dlg = new MasterParamInputDialog("下发 CV 恒压点", "目标 CV 恒压充电点 (V):", (double)numCvVolt.Value, 10, 150, 2))
-                {
-                    if (dlg.ShowDialog(this) == DialogResult.OK) _comm.SendMasterControl("WRITE_CV_VOLT", dlg.ResultValue);
-                }
-            };
-            ToolStripMenuItem miForceChg = new ToolStripMenuItem("触发强制充电");
-            miForceChg.Click += delegate(object s, EventArgs e) {
-                if (!_comm.IsOpen) { MessageBox.Show("请先打开串口！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
-                _comm.SendMasterControl("FORCE_CHARGE", true);
-            };
-            ToolStripMenuItem miShutdown = new ToolStripMenuItem("下发关机指令");
-            miShutdown.Click += delegate(object s, EventArgs e) {
-                if (!_comm.IsOpen) { MessageBox.Show("请先打开串口！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
-                _comm.SendMasterControl("SHUTDOWN", null);
-            };
-            menuMasterCtrl.Items.AddRange(new ToolStripItem[] { miWriteChgI, miWriteDisI, miWriteCv, new ToolStripSeparator(), miForceChg, miShutdown });
-            btnMasterCtrl.Click += delegate(object s, EventArgs e) {
-                menuMasterCtrl.Show(btnMasterCtrl, new Point(0, btnMasterCtrl.Height));
-            };
-            flpTopRow2.Controls.Add(btnMasterCtrl);
 
             tlpTop.Controls.Add(flpTopRow2, 0, 1);
 
@@ -1174,10 +693,9 @@ namespace BMS_Protocol_Simulator
 
             TableLayoutPanel pnlTab = new TableLayoutPanel();
             pnlTab.Dock = DockStyle.Fill;
-            pnlTab.RowCount = 3;
+            pnlTab.RowCount = 2;
             pnlTab.ColumnCount = 1;
             pnlTab.RowStyles.Add(new RowStyle(SizeType.Absolute, 226f));
-            pnlTab.RowStyles.Add(new RowStyle(SizeType.Absolute, 42f));
             pnlTab.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
             pnlTab.MouseDown += onBlankMouseDown;
             parent.MouseDown += onBlankMouseDown;
@@ -1260,7 +778,7 @@ namespace BMS_Protocol_Simulator
 
             pnlTab.Controls.Add(grid, 0, 0);
 
-            // ── 行 1: 恢复默认 | ⚙ 连体按钮栏 ──
+            // ── 行 1: 3KU / 6KU 一键基准按钮栏 ──
             FlowLayoutPanel flpActions = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -1269,94 +787,33 @@ namespace BMS_Protocol_Simulator
             };
             flpActions.MouseDown += onBlankMouseDown;
 
-            // 连体组合按钮面板
-            pnlCombo = new Panel
+            btnProfile3KU = new Button
             {
+                Text = "3KU (24V) 基准",
+                Width = 104,
                 Height = 26,
-                Width = 118,
+                Margin = new Padding(2, 2, 4, 2)
+            };
+            btnProfile3KU.Click += delegate(object s, EventArgs e) {
+                _model.ApplyProfile("3KU");
+                SyncModelToUI();
+                CommitAllControls();
+                lblStatusText.Text = "已应用 [3KU (24V)] 基准参数套系";
+            };
+
+            btnProfile6KU = new Button
+            {
+                Text = "6KU (48V) 基准",
+                Width = 104,
+                Height = 26,
                 Margin = new Padding(2, 2, 6, 2)
             };
-
-            btnApplyProfile = new Button
-            {
-                Text = "应用套系",
-                TextAlign = ContentAlignment.MiddleLeft,
-                Padding = new Padding(6, 0, 0, 0),
-                Width = 88,
-                Height = 26,
-                Location = new Point(0, 0),
-                Margin = new Padding(0)
-            };
-
-            btnApplyProfile.Paint += delegate(object s, PaintEventArgs e) {
-                // 绘制类似 ComboBox 下拉选框的 V 型细折线箭头
-                int arrowX = btnApplyProfile.Width - 13;
-                int arrowY = btnApplyProfile.Height / 2;
-                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                using (Pen pen = new Pen(Color.FromArgb(90, 90, 90), 1.2f))
-                {
-                    e.Graphics.DrawLines(pen, new Point[] {
-                        new Point(arrowX - 4, arrowY - 2),
-                        new Point(arrowX, arrowY + 2),
-                        new Point(arrowX + 4, arrowY - 2)
-                    });
-                }
-            };
-
-            ContextMenuStrip menuApply = new ContextMenuStrip();
-            menuApply.Font = new Font("Microsoft YaHei UI", 9F);
-            menuApply.ShowImageMargin = false;
-            menuApply.ShowCheckMargin = false;
-
-            ToolStripMenuItem miApply3KU = new ToolStripMenuItem("应用 3KU 默认参数 (24V)");
-            miApply3KU.TextAlign = ContentAlignment.MiddleLeft;
-            miApply3KU.Click += delegate(object s, EventArgs e) {
-                _defaultConfig = BmsDefaultConfig.Load();
-                _defaultConfig.ActiveProfileName = "3KU";
-                _defaultConfig.Save();
-                _model.ApplyDefaultConfig(_defaultConfig.Profile3KU);
+            btnProfile6KU.Click += delegate(object s, EventArgs e) {
+                _model.ApplyProfile("6KU");
                 SyncModelToUI();
                 CommitAllControls();
-                lblStatusText.Text = "已应用 [3KU (24V)] 默认参数套系";
+                lblStatusText.Text = "已应用 [6KU (48V)] 基准参数套系";
             };
-
-            ToolStripMenuItem miApply6KU = new ToolStripMenuItem("应用 6KU 默认参数 (48V)");
-            miApply6KU.TextAlign = ContentAlignment.MiddleLeft;
-            miApply6KU.Click += delegate(object s, EventArgs e) {
-                _defaultConfig = BmsDefaultConfig.Load();
-                _defaultConfig.ActiveProfileName = "6KU";
-                _defaultConfig.Save();
-                _model.ApplyDefaultConfig(_defaultConfig.Profile6KU);
-                SyncModelToUI();
-                CommitAllControls();
-                lblStatusText.Text = "已应用 [6KU (48V)] 默认参数套系";
-            };
-
-            menuApply.Items.AddRange(new ToolStripItem[] { miApply3KU, miApply6KU });
-
-            btnApplyProfile.Click += delegate(object s, EventArgs e) {
-                menuApply.Show(btnApplyProfile, new Point(0, btnApplyProfile.Height));
-            };
-
-            btnGear = new Button
-            {
-                Text = "⚙",
-                Width = 28,
-                Height = 26,
-                Location = new Point(89, 0),
-                Margin = new Padding(0),
-                Font = new Font("Segoe UI Symbol", 9F, FontStyle.Regular)
-            };
-
-            ToolTip tip = new ToolTip();
-            tip.SetToolTip(btnGear, "修改并配置 3KU / 6KU 默认值参数套系");
-
-            btnGear.Click += delegate(object s, EventArgs e) {
-                OpenDefaultConfigDialog();
-            };
-
-            pnlCombo.Controls.Add(btnApplyProfile);
-            pnlCombo.Controls.Add(btnGear);
 
             chkAutoAdapt = new CheckBox
             {
@@ -1368,31 +825,9 @@ namespace BMS_Protocol_Simulator
             };
             chkAutoAdapt.CheckedChanged += delegate(object s, EventArgs e) {
                 _comm.AutoAdaptEnabled = chkAutoAdapt.Checked;
-                UpdateModelMatchBanner();
                 lblStatusText.Text = chkAutoAdapt.Checked
                     ? "智能自适应已开启：收到逆变器报文时将自动匹配机型与协议"
                     : "智能自适应已关闭：保持当前手动协议与套系配置";
-            };
-
-            chkDynamicSim = new CheckBox
-            {
-                Text = "动态推演",
-                AutoSize = true,
-                Checked = false,
-                Margin = new Padding(6, 5, 6, 2),
-                Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular)
-            };
-            chkDynamicSim.CheckedChanged += delegate(object s, EventArgs e) {
-                if (chkDynamicSim.Checked)
-                {
-                    _dynamicSimTimer.Start();
-                    lblStatusText.Text = "动态充放推演已启动：按实时电流演进 SOC、容量与总压";
-                }
-                else
-                {
-                    _dynamicSimTimer.Stop();
-                    lblStatusText.Text = "动态充放推演已停止";
-                }
             };
 
             lblHint = new Label
@@ -1405,189 +840,18 @@ namespace BMS_Protocol_Simulator
             };
             lblHint.MouseDown += onBlankMouseDown;
 
-            flpActions.Controls.Add(pnlCombo);
+            flpActions.Controls.Add(btnProfile3KU);
+            flpActions.Controls.Add(btnProfile6KU);
             flpActions.Controls.Add(chkAutoAdapt);
-            flpActions.Controls.Add(chkDynamicSim);
             flpActions.Controls.Add(lblHint);
 
             pnlTab.Controls.Add(flpActions, 0, 1);
 
-            // ── 行 2: 机型与协议智能诊断 / 警告横幅 ──
-            pnlBannerContainer = new Panel { Dock = DockStyle.Fill, Padding = new Padding(4, 2, 4, 2) };
-            pnlBannerContainer.MouseDown += onBlankMouseDown;
-
-            TableLayoutPanel pnlBannerTable = new TableLayoutPanel
-            {
-                Dock = DockStyle.Top,
-                Height = 36,
-                RowCount = 1,
-                ColumnCount = 3,
-                BackColor = Color.FromArgb(248, 249, 250),
-                Padding = new Padding(6, 3, 6, 3),
-                Margin = new Padding(0)
-            };
-            pnlBannerTable.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));          // Col 0: 图标
-            pnlBannerTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));     // Col 1: 提示文本
-            pnlBannerTable.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));          // Col 2: 一键纠正按钮
-            pnlBannerTable.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
-            pnlBannerTable.MouseDown += onBlankMouseDown;
-            pnlBannerTable.Paint += delegate(object s, PaintEventArgs e) {
-                using (Pen pen = new Pen(Color.FromArgb(220, 224, 230), 1f))
-                {
-                    e.Graphics.DrawRectangle(pen, 0, 0, pnlBannerTable.Width - 1, pnlBannerTable.Height - 1);
-                }
-            };
-            pnlModelMatchBanner = pnlBannerTable;
-
-            lblBannerIcon = new Label
-            {
-                Text = "○",
-                AutoSize = true,
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleCenter,
-                Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold),
-                ForeColor = Color.DimGray,
-                Margin = new Padding(2, 0, 4, 0)
-            };
-            lblBannerIcon.MouseDown += onBlankMouseDown;
-
-            lblBannerText = new Label
-            {
-                Text = "串口未连接 (自适应已关闭，将按当前手动配置协议响应)",
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleLeft,
-                AutoEllipsis = true,
-                Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular),
-                ForeColor = Color.FromArgb(70, 75, 85),
-                Margin = new Padding(2, 0, 4, 0)
-            };
-            lblBannerText.MouseDown += onBlankMouseDown;
-
-            btnQuickFix = new Button
-            {
-                Text = "一键纠正",
-                AutoSize = true,
-                Height = 24,
-                Dock = DockStyle.Right,
-                Visible = false,
-                Margin = new Padding(4, 1, 2, 1)
-            };
-            btnQuickFix.Click += BtnQuickFix_Click;
-
-            pnlBannerTable.Controls.Add(lblBannerIcon, 0, 0);
-            pnlBannerTable.Controls.Add(lblBannerText, 1, 0);
-            pnlBannerTable.Controls.Add(btnQuickFix, 2, 0);
-
-            pnlBannerContainer.Controls.Add(pnlBannerTable);
-            pnlTab.Controls.Add(pnlBannerContainer, 0, 2);
-
             parent.Controls.Add(pnlTab);
         }
 
-        private void OpenDefaultConfigDialog()
-        {
-            using (DefaultConfigDialog dlg = new DefaultConfigDialog(BmsDefaultConfig.Load()))
-            {
-                if (dlg.ShowDialog(this) == DialogResult.OK)
-                {
-                    _defaultConfig = dlg.ResultConfig;
-                    lblStatusText.Text = "✓ 3KU / 6KU 默认值参数配置已成功保存至本地";
-                }
-            }
-        }
-
-        private void DynamicSimTimer_Tick(object sender, EventArgs e)
-        {
-            if (_comm != null && _comm.CurrentWorkMode == WorkMode.MasterPoller)
-            {
-                _dynamicSimTimer.Stop();
-                if (chkDynamicSim != null && chkDynamicSim.Checked) chkDynamicSim.Checked = false;
-                return;
-            }
-
-            // 用户正在手动编辑输入框时不抢占焦点更新
-            if (_currentFocusedControl != null) return;
-
-            bool changed = false;
-            string tripMessage = null;
-
-            lock (_model.SyncRoot)
-            {
-                double current = _model.Current;
-                if (Math.Abs(current) < 0.01) return;
-
-                // 检查禁充/禁放闭锁
-                if (current > 0 && !_model.CanCharge)
-                {
-                    _model.Current = 0;
-                    changed = true;
-                    tripMessage = "⛔ 充电回路已闭锁，动态推演已自动将充电电流归零";
-                }
-                else if (current < 0 && !_model.CanDischarge)
-                {
-                    _model.Current = 0;
-                    changed = true;
-                    tripMessage = "⛔ 放电回路已闭锁，动态推演已自动将放电电流归零";
-                }
-                else
-                {
-                    // 实验室 60 倍速安时积分 (1秒等效1分钟充放电时长)
-                    double deltaAh = current * (60.0 / 3600.0);
-                    double fullCap = Math.Max(1.0, _model.FullCapacity);
-                    double newRem = Math.Max(0.0, Math.Min(fullCap, _model.RemainingCapacity + deltaAh));
-                    _model.RemainingCapacity = Math.Round(newRem, 2);
-                    _model.SOC = Math.Round((_model.RemainingCapacity / fullCap) * 100.0, 0);
-
-                    // 根据 SOC 与充放内阻动态演进端电压
-                    double vSpan = Math.Max(2.0, _model.CVVoltage - _model.CutoffVoltage);
-                    double simVolt = _model.CutoffVoltage + vSpan * (_model.SOC / 100.0) + (current * 0.006);
-                    _model.Voltage = Math.Round(Math.Max(10.0, Math.Min(100.0, simVolt)), 2);
-
-                    // 阈值联动告警与保护
-                    _model.WarnLowCapacity = (_model.SOC <= 10.0);
-                    if (current > 0 && (_model.SOC >= 98.0 || _model.Voltage >= _model.CVVoltage))
-                    {
-                        _model.WarnGlobalOverVolt = true;
-                        _model.WarnSingleOverVolt = true;
-                    }
-                    if (current < 0 && (_model.SOC <= 5.0 || _model.Voltage <= _model.CutoffVoltage + 0.5))
-                    {
-                        _model.WarnGlobalUnderVolt = true;
-                        _model.WarnSingleUnderVolt = true;
-                    }
-
-                    if (current > 0 && _model.SOC >= 100.0)
-                    {
-                        _model.ProtOverVolt = true;
-                        _model.MaxChargeCurrent = 0;
-                        _model.Current = 0;
-                        tripMessage = "🛑 [动态推演] SOC 已达 100% 满充阈值，自动触发过压保护并切断充电电流！";
-                    }
-                    else if (current < 0 && (_model.SOC <= 0.0 || _model.Voltage <= _model.CutoffVoltage))
-                    {
-                        _model.ProtUnderVolt = true;
-                        _model.StatusForceCharge = true;
-                        _model.MaxDischargeCurrent = 0;
-                        _model.Current = 0;
-                        tripMessage = "⚠️ [动态推演] 电量已放空至截止阈值，自动触发欠压保护并请求强制充电！";
-                    }
-
-                    changed = true;
-                }
-            }
-
-            if (changed)
-            {
-                SyncModelToUI();
-                if (!string.IsNullOrEmpty(tripMessage))
-                {
-                    lblStatusText.Text = tripMessage;
-                }
-            }
-        }
-
         // ══════════════════════════════════════════════════════════
-        // 核心 NumericUpDown 交互行为与三级参数校验
+        // 核心 NumericUpDown 交互行为与参数校验
         // ══════════════════════════════════════════════════════════
         private static TextBox GetInnerTextBox(NumericUpDown num)
         {
@@ -1709,26 +973,6 @@ namespace BMS_Protocol_Simulator
             statusStrip.Focus();
         }
 
-        private void ShowProtocolDifferenceTip(Control targetControl, string message)
-        {
-            if (this.IsDisposed) return;
-
-            if (lblStatusText != null)
-            {
-                string cleanMsg = message.Replace("\r", "").Replace("\n\n", " —— ").Replace("\n", " ");
-                lblStatusText.Text = "💡 " + cleanMsg;
-            }
-
-            if (_paramTip == null)
-            {
-                _paramTip = new ToolTip { ShowAlways = true, IsBalloon = true, ToolTipTitle = "协议差异提示", ToolTipIcon = ToolTipIcon.Info };
-            }
-            if (targetControl != null && targetControl.IsHandleCreated)
-            {
-                _paramTip.Show(message, targetControl, 10, -25, 4000);
-            }
-        }
-
         private void HandleNumericKeyDown(NumericUpDown num, KeyEventArgs e)
         {
             if (e.KeyCode == Keys.Enter || (e.Control && e.KeyCode == Keys.S))
@@ -1746,24 +990,18 @@ namespace BMS_Protocol_Simulator
             }
         }
 
-        // ── 参数合理性校验算法 ──
-        private ValidationLevel ValidateNumeric(NumericUpDown num, decimal value, out string message)
+        // ── 参数非法边界拦截校验 ──
+        private bool ValidateNumeric(NumericUpDown num, decimal value, out string message)
         {
             message = string.Empty;
 
-            // 1. 剩余容量与满充容量跨参数逻辑校验
             if (num == numRemCap)
             {
                 decimal currentFull = _committedValues.ContainsKey(numFullCap) ? _committedValues[numFullCap] : numFullCap.Value;
                 if (value > currentFull)
                 {
                     message = string.Format("非法输入: 剩余容量 ({0}Ah) 不能大于满充总容量 ({1}Ah)！", value, currentFull);
-                    return ValidationLevel.Invalid;
-                }
-                if (value <= 0)
-                {
-                    message = "极限工况: 剩余容量为 0Ah (电池完全放空)";
-                    return ValidationLevel.Extreme;
+                    return false;
                 }
             }
             else if (num == numFullCap)
@@ -1771,27 +1009,21 @@ namespace BMS_Protocol_Simulator
                 if (value <= 0)
                 {
                     message = "非法输入: 满充总容量必须大于 0Ah！";
-                    return ValidationLevel.Invalid;
+                    return false;
                 }
                 decimal currentRem = _committedValues.ContainsKey(numRemCap) ? _committedValues[numRemCap] : numRemCap.Value;
                 if (value < currentRem)
                 {
                     message = string.Format("非法输入: 满充总容量 ({0}Ah) 不能小于当前剩余容量 ({1}Ah)！", value, currentRem);
-                    return ValidationLevel.Invalid;
+                    return false;
                 }
             }
-            // 2. SOC / SOH 校验
             else if (num == numSoc)
             {
                 if (value < 0 || value > 100)
                 {
                     message = "非法输入: SOC 百分比必须在 0% ~ 100% 之间！";
-                    return ValidationLevel.Invalid;
-                }
-                if (value <= 5 || value >= 99)
-                {
-                    message = string.Format("极限工况: 电池处于极限 SOC 状态 ({0}%)", value);
-                    return ValidationLevel.Extreme;
+                    return false;
                 }
             }
             else if (num == numSoh)
@@ -1799,26 +1031,15 @@ namespace BMS_Protocol_Simulator
                 if (value < 0 || value > 100)
                 {
                     message = "非法输入: SOH 健康度必须在 0% ~ 100% 之间！";
-                    return ValidationLevel.Invalid;
-                }
-                if (value < 60)
-                {
-                    message = string.Format("极限工况: 电池健康度严重衰减 SOH={0}%", value);
-                    return ValidationLevel.Extreme;
+                    return false;
                 }
             }
-            // 3. 电压与 CV 点校验
             else if (num == numVoltage)
             {
                 if (value <= 0)
                 {
                     message = "非法输入: 电池总电压必须大于 0V！";
-                    return ValidationLevel.Invalid;
-                }
-                if (value < 10 || value > 140)
-                {
-                    message = string.Format("极限工况: 电池总电压 {0:F2}V (属于异常极限欠压/过压测试点)", value);
-                    return ValidationLevel.Extreme;
+                    return false;
                 }
             }
             else if (num == numCvVolt)
@@ -1826,13 +1047,7 @@ namespace BMS_Protocol_Simulator
                 if (value <= 10)
                 {
                     message = "非法输入: CV 恒压充电点必须大于 10V！";
-                    return ValidationLevel.Invalid;
-                }
-                decimal currentV = _committedValues.ContainsKey(numVoltage) ? _committedValues[numVoltage] : numVoltage.Value;
-                if (value < currentV)
-                {
-                    message = string.Format("极限工况: CV 恒压点 ({0:F2}V) 低于当前电池电压 ({1:F2}V)", value, currentV);
-                    return ValidationLevel.Extreme;
+                    return false;
                 }
             }
             else if (num == numCutoffVolt)
@@ -1840,19 +1055,13 @@ namespace BMS_Protocol_Simulator
                 if (value <= 0)
                 {
                     message = "非法输入: 放电截止点必须大于 0V！";
-                    return ValidationLevel.Invalid;
+                    return false;
                 }
                 decimal currentCv = _committedValues.ContainsKey(numCvVolt) ? _committedValues[numCvVolt] : numCvVolt.Value;
                 if (value >= currentCv)
                 {
                     message = string.Format("非法输入: 放电截止点 ({0:F2}V) 不能大于或等于 CV 恒压点 ({1:F2}V)！", value, currentCv);
-                    return ValidationLevel.Invalid;
-                }
-                decimal currentV = _committedValues.ContainsKey(numVoltage) ? _committedValues[numVoltage] : numVoltage.Value;
-                if (currentV <= value)
-                {
-                    message = string.Format("极限工况: 当前电池电压 ({0:F2}V) 已跌至或低于放电截止点 ({1:F2}V)", currentV, value);
-                    return ValidationLevel.Extreme;
+                    return false;
                 }
             }
             else if (num == numCycleCount)
@@ -1860,41 +1069,11 @@ namespace BMS_Protocol_Simulator
                 if (value < 0)
                 {
                     message = "非法输入: 循环次数不能为负数！";
-                    return ValidationLevel.Invalid;
-                }
-                if (value >= 6000)
-                {
-                    message = string.Format("极限工况: 电池循环次数 {0} 次 (高寿命衰减测试)", value);
-                    return ValidationLevel.Extreme;
-                }
-            }
-            // 4. 电流与温度极限校验
-            else if (num == numCurrent)
-            {
-                if (Math.Abs(value) >= 200)
-                {
-                    message = string.Format("极限工况: 充放电电流 {0:F2}A (大电流重载测试)", value);
-                    return ValidationLevel.Extreme;
-                }
-            }
-            else if (num == numTemp)
-            {
-                if (value <= -15 || value >= 65)
-                {
-                    message = string.Format("极限工况: 电池温度 {0:F1}°C (处于极端高低温区)", value);
-                    return ValidationLevel.Extreme;
-                }
-            }
-            else if (num == numMaxChgI || num == numMaxDisI)
-            {
-                if (value == 0)
-                {
-                    message = "极限工况: 限流设定为 0A (禁充/禁放动作)";
-                    return ValidationLevel.Extreme;
+                    return false;
                 }
             }
 
-            return ValidationLevel.Normal;
+            return true;
         }
 
         private void CommitSingleControl(NumericUpDown num)
@@ -1914,7 +1093,7 @@ namespace BMS_Protocol_Simulator
                 {
                     if (parsed < num.Minimum || parsed > num.Maximum)
                     {
-                        FlashControlColor(num, Color.FromArgb(254, 202, 202)); // 浅粉红
+                        FlashControlColor(num, Color.FromArgb(254, 202, 202));
                         RollbackNumeric(num);
                         lblStatusText.Text = string.Format("⛔ 非法输入: 数值 ({0}) 超出允许量程 [{1} ~ {2}]，已自动拦截回滚！", parsed, num.Minimum, num.Maximum);
                         return;
@@ -1933,12 +1112,9 @@ namespace BMS_Protocol_Simulator
             }
 
             string validationMsg;
-            ValidationLevel level = ValidateNumeric(num, num.Value, out validationMsg);
-
-            if (level == ValidationLevel.Invalid)
+            if (!ValidateNumeric(num, num.Value, out validationMsg))
             {
-                // 非法输入: 红色闪烁 2 秒，拒绝生效并自动回滚
-                FlashControlColor(num, Color.FromArgb(254, 202, 202)); // 浅粉红
+                FlashControlColor(num, Color.FromArgb(254, 202, 202));
                 RollbackNumeric(num);
                 lblStatusText.Text = "⛔ " + validationMsg;
                 return;
@@ -1949,51 +1125,8 @@ namespace BMS_Protocol_Simulator
 
             ApplyCommittedValueToModel(num);
 
-            if (cboProtocol != null)
-            {
-                if (cboProtocol.SelectedIndex == 0) // CVTE 协议模式提示
-                {
-                    if (num == numCutoffVolt)
-                    {
-                        ShowProtocolDifferenceTip(num, "【协议差异提示】\nCVTE Modbus-RTU 协议寄存器表 (0x0020~0x002B) 中未定义【放电截止点】寄存器。\n该参数主要由 Pylontech (63H Item 2) 传输；CVTE 下逆变器依据本地配置或欠压保护执行放电截止切断。");
-                    }
-                    else if (num == numMaxDisI)
-                    {
-                        ShowProtocolDifferenceTip(num, "【协议差异提示】\nCVTE Modbus-RTU 协议仅定义了【最大充电电流 (0x0029)】寄存器，未定义独立的【最大放电电流】限流寄存器。\nCVTE 逆变器依据状态字 (0x0020 Bit 5) 的【放电使能】进行放电回路通断控制。");
-                    }
-                }
-                else if (cboProtocol.SelectedIndex == 1) // GROWATT 协议模式提示
-                {
-                    if (num == numCutoffVolt)
-                    {
-                        ShowProtocolDifferenceTip(num, "【协议差异提示】\nGrowatt Modbus-RTU 协议寄存器表 (0x0001~0x0029) 中未定义【放电截止点】寄存器 (仅包含 0x0021 CV 充电电压)。\nGrowatt 逆变器依据本地配置或 BMS 欠压保护执行放电截止切断。");
-                    }
-                }
-                else if (cboProtocol.SelectedIndex == 4) // LIB_MODBUS 协议模式提示
-                {
-                    if (num == numCutoffVolt)
-                    {
-                        ShowProtocolDifferenceTip(num, "【协议差异提示】\nLIB_MODBUS (RS485 V1.30) 协议寄存器表 (0x1000~0x1016) 中未定义【放电截止点】寄存器 (仅包含 0x1014 恒压充电电压)。\n逆变器依据本地配置或 BMS 欠压保护执行放电截止切断。");
-                    }
-                    else if (num == numMaxDisI)
-                    {
-                        ShowProtocolDifferenceTip(num, "【协议差异提示】\nLIB_MODBUS 协议仅定义了【最大充电电流 (0x100C)】寄存器，未定义独立的【最大放电电流】限流寄存器。\n逆变器依据 0x1007 状态字的【放电使能】进行放电回路控制。");
-                    }
-                }
-            }
-
-            if (level == ValidationLevel.Extreme)
-            {
-                // 极限工况: 黄色闪烁 2 秒，允许生效
-                FlashControlColor(num, Color.FromArgb(254, 240, 138)); // 柔和琥珀黄
-                lblStatusText.Text = "⚠️ " + validationMsg;
-            }
-            else
-            {
-                // 正常参数: 绿色闪烁 2 秒
-                FlashControlColor(num, Color.FromArgb(198, 246, 213)); // 清新淡绿
-                lblStatusText.Text = "✓ 数值已提交生效";
-            }
+            FlashControlColor(num, Color.FromArgb(198, 246, 213));
+            lblStatusText.Text = "✓ 数值已提交生效";
         }
 
         private void CommitAllControls()
@@ -2137,107 +1270,22 @@ namespace BMS_Protocol_Simulator
             mainFlags.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
             mainFlags.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
 
-            // ── 0. 一键工况预设栏 (标准系统按钮风格，无花哨配色与图标) ──
+            // ── 0. 告警与保护一键复位栏 ──
             flpQuickPresets = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 Padding = new Padding(2, 3, 2, 1),
                 WrapContents = false
             };
-            Label lblPresetTitle = new Label
+
+            Button btnPresetClear = new Button
             {
-                Text = "快捷工况:",
-                AutoSize = true,
-                Margin = new Padding(2, 6, 4, 0)
+                Text = "全清恢复 (清除所有告警与保护)",
+                Width = 210,
+                Height = 25,
+                Margin = new Padding(2, 1, 4, 1)
             };
-            flpQuickPresets.Controls.Add(lblPresetTitle);
-
-            Func<string, EventHandler, Button> createPresetBtn = delegate(string text, EventHandler onClick)
-            {
-                Button b = new Button
-                {
-                    Text = text,
-                    Width = 72,
-                    Height = 25,
-                    Margin = new Padding(2, 1, 4, 1)
-                };
-                b.Click += onClick;
-                return b;
-            };
-
-            Button btnPresetNormal = createPresetBtn("正常满载", delegate(object s, EventArgs e) {
-                lock (_model.SyncRoot)
-                {
-                    _model.ClearAllAlarmsAndProtections();
-                    _model.SOC = 85.0;
-                    _model.RemainingCapacity = Math.Round(_model.FullCapacity * 0.85, 1);
-                    double span = Math.Max(2.0, _model.CVVoltage - _model.CutoffVoltage);
-                    _model.Voltage = Math.Round(_model.CutoffVoltage + span * 0.78, 2);
-                    _model.Current = 20.0;
-                    _model.MaxChargeCurrent = _userConfiguredMaxChgI > 0 ? _userConfiguredMaxChgI : 100.0;
-                    _model.MaxDischargeCurrent = _userConfiguredMaxDisI > 0 ? _userConfiguredMaxDisI : 100.0;
-                }
-                SyncModelToUI();
-                lblStatusText.Text = "已切换至 [正常满载] 工况 (SOC=85%, 充放双通, 告警清零)";
-            });
-
-            Button btnPresetForceChg = createPresetBtn("低电强充", delegate(object s, EventArgs e) {
-                lock (_model.SyncRoot)
-                {
-                    _model.ClearAllAlarmsAndProtections();
-                    _model.SOC = 4.0;
-                    _model.RemainingCapacity = Math.Round(_model.FullCapacity * 0.04, 1);
-                    _model.Voltage = Math.Round(_model.CutoffVoltage + 0.4, 2);
-                    _model.Current = 0.0;
-                    _model.StatusForceCharge = true;
-                    _model.StatusChargeEnable = true;
-                    _model.StatusDischargeEnable = false;
-                    _model.WarnLowCapacity = true;
-                    _model.WarnGlobalUnderVolt = true;
-                    _model.MaxChargeCurrent = _userConfiguredMaxChgI > 0 ? _userConfiguredMaxChgI : 80.0;
-                    _model.MaxDischargeCurrent = 0.0;
-                }
-                SyncModelToUI();
-                lblStatusText.Text = "已切换至 [低电强充] 工况 (SOC=4%, 请求强制充电, 禁止放电)";
-            });
-
-            Button btnPresetOvTrip = createPresetBtn("过压保护", delegate(object s, EventArgs e) {
-                lock (_model.SyncRoot)
-                {
-                    _model.ClearAllAlarmsAndProtections();
-                    _model.SOC = 100.0;
-                    _model.RemainingCapacity = _model.FullCapacity;
-                    _model.Voltage = Math.Round(_model.CVVoltage + 1.2, 2);
-                    _model.Current = 0.0;
-                    _model.WarnSingleOverVolt = true;
-                    _model.WarnGlobalOverVolt = true;
-                    _model.ProtOverVolt = true;
-                    _model.MaxChargeCurrent = 0.0;
-                }
-                SyncModelToUI();
-                lblStatusText.Text = "已切换至 [过压保护] 工况 (总压超上限, 切断充电限流)";
-            });
-
-            Button btnPresetUvTrip = createPresetBtn("欠压保护", delegate(object s, EventArgs e) {
-                lock (_model.SyncRoot)
-                {
-                    _model.ClearAllAlarmsAndProtections();
-                    _model.SOC = 0.0;
-                    _model.RemainingCapacity = 0.0;
-                    _model.Voltage = Math.Round(Math.Max(10.0, _model.CutoffVoltage - 1.0), 2);
-                    _model.Current = 0.0;
-                    _model.StatusForceCharge = true;
-                    _model.WarnSingleUnderVolt = true;
-                    _model.WarnGlobalUnderVolt = true;
-                    _model.WarnLowCapacity = true;
-                    _model.ProtUnderVolt = true;
-                    _model.MaxDischargeCurrent = 0.0;
-                }
-                SyncModelToUI();
-                lblStatusText.Text = "已切换至 [欠压保护] 工况 (SOC=0%, 切断放电限流)";
-            });
-
-            Button btnPresetClear = createPresetBtn("全清恢复", delegate(object s, EventArgs e) {
+            btnPresetClear.Click += delegate(object s, EventArgs e) {
                 lock (_model.SyncRoot)
                 {
                     _model.ClearAllAlarmsAndProtections();
@@ -2246,11 +1294,9 @@ namespace BMS_Protocol_Simulator
                 }
                 SyncModelToUI();
                 lblStatusText.Text = "已清除所有告警与保护跳闸标志，并恢复正常充放电限流";
-            });
+            };
 
-            flpQuickPresets.Controls.AddRange(new Control[] {
-                btnPresetNormal, btnPresetForceChg, btnPresetOvTrip, btnPresetUvTrip, btnPresetClear
-            });
+            flpQuickPresets.Controls.Add(btnPresetClear);
             mainFlags.Controls.Add(flpQuickPresets, 0, 0);
 
             // ── 1. 状态位 ──
@@ -2329,21 +1375,6 @@ namespace BMS_Protocol_Simulator
             chkFullChg.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
                     lock (_model.SyncRoot) { _model.StatusFullCharge = chkFullChg.Checked; }
-                    if (chkFullChg.Checked && cboProtocol != null)
-                    {
-                        if (cboProtocol.SelectedIndex == 0) // 0: CVTE
-                        {
-                            ShowProtocolDifferenceTip(chkFullChg, "【协议差异提示】\nCVTE Modbus-RTU 协议状态字 (0x0020) 中未定义【请求满充】标志位。\n该标志位为 Pylontech (63H Bit 4) 与 Voltronic (0x0074 Bit 3) 专属。当前协议下不予下发。");
-                        }
-                        else if (cboProtocol.SelectedIndex == 1) // 1: GROWATT
-                        {
-                            ShowProtocolDifferenceTip(chkFullChg, "【协议差异提示】\nGrowatt Modbus-RTU 协议状态字 (0x0013) 中未定义【请求满充】标志位 (仅包含 Bit 12 强制充电请求)。\n该标志位为 Pylontech 与 Voltronic 专属。当前协议下不予下发。");
-                        }
-                        else if (cboProtocol.SelectedIndex == 4) // 4: LIB_MODBUS
-                        {
-                            ShowProtocolDifferenceTip(chkFullChg, "【协议差异提示】\nLIB_MODBUS 协议状态字 (0x1007) 中未定义【请求满充】标志位。\n当前协议下不予下发。");
-                        }
-                    }
                 }
             };
 
@@ -2351,21 +1382,6 @@ namespace BMS_Protocol_Simulator
             chkBalance.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
                     lock (_model.SyncRoot) { _model.StatusBalancing = chkBalance.Checked; }
-                    if (chkBalance.Checked && cboProtocol != null)
-                    {
-                        if (cboProtocol.SelectedIndex == 3) // 3: Pylontech
-                        {
-                            ShowProtocolDifferenceTip(chkBalance, "【协议差异提示】\nPylontech (派能) 低压 RS485 协议标准报文 (61H~63H) 中无独立的【电芯均衡中】状态位。\n该状态位为 CVTE 与 Growatt 专属，当前协议下仅作本地仿真模拟。");
-                        }
-                        else if (cboProtocol.SelectedIndex == 2) // 2: Voltronic
-                        {
-                            ShowProtocolDifferenceTip(chkBalance, "【协议差异提示】\nVoltronic 协议充放电状态字 (0x0074) 中无独立的【电芯均衡中】状态位。\n当前协议下仅作本地仿真模拟。");
-                        }
-                        else if (cboProtocol.SelectedIndex == 4) // 4: LIB_MODBUS
-                        {
-                            ShowProtocolDifferenceTip(chkBalance, "【协议差异提示】\nLIB_MODBUS 协议状态字 (0x1007) 中无独立的【电芯均衡中】状态位。\n当前协议下仅作本地仿真模拟。");
-                        }
-                    }
                 }
             };
 
@@ -2373,21 +1389,6 @@ namespace BMS_Protocol_Simulator
             chkSleep.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
                     lock (_model.SyncRoot) { _model.StatusSleep = chkSleep.Checked; }
-                    if (chkSleep.Checked && cboProtocol != null)
-                    {
-                        if (cboProtocol.SelectedIndex == 3) // 3: Pylontech
-                        {
-                            ShowProtocolDifferenceTip(chkSleep, "【协议差异提示】\nPylontech (派能) 协议通过 64H 关机指令控制休眠/关机，运行态报文中无【休眠状态】标志位。\n该状态位为 CVTE 与 Growatt 专属。");
-                        }
-                        else if (cboProtocol.SelectedIndex == 2) // 2: Voltronic
-                        {
-                            ShowProtocolDifferenceTip(chkSleep, "【协议差异提示】\nVoltronic 协议充放电状态字 (0x0074) 中无【休眠状态】标志位。\n当前协议下仅作本地仿真模拟。");
-                        }
-                        else if (cboProtocol.SelectedIndex == 4) // 4: LIB_MODBUS
-                        {
-                            ShowProtocolDifferenceTip(chkSleep, "【协议差异提示】\nLIB_MODBUS 协议运行态报文中无【休眠状态】标志位。\n当前协议下仅作本地仿真模拟。");
-                        }
-                    }
                 }
             };
 
@@ -2443,17 +1444,6 @@ namespace BMS_Protocol_Simulator
             chkWarnVoltDiff.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
                     lock (_model.SyncRoot) { _model.WarnVoltDiff = chkWarnVoltDiff.Checked; }
-                    if (chkWarnVoltDiff.Checked && cboProtocol != null)
-                    {
-                        if (cboProtocol.SelectedIndex == 2) // 2: Voltronic
-                        {
-                            ShowProtocolDifferenceTip(chkWarnVoltDiff, "【协议差异提示】\nVoltronic 协议告警矩阵 (0x0060~0x0069) 中未定义独立的【电芯压差过大】告警位。\n当前协议下仅作本地仿真模拟。");
-                        }
-                        else if (cboProtocol.SelectedIndex == 4) // 4: LIB_MODBUS
-                        {
-                            ShowProtocolDifferenceTip(chkWarnVoltDiff, "【协议差异提示】\nLIB_MODBUS 协议告警寄存器 (0x1005) 中未定义独立的【电芯压差过大】告警位。\n当前协议下仅作本地仿真模拟。");
-                        }
-                    }
                 }
             };
 
@@ -2461,17 +1451,6 @@ namespace BMS_Protocol_Simulator
             chkWarnLowCap.CheckedChanged += delegate(object s, EventArgs e) {
                 if (!_isUpdatingUi) {
                     lock (_model.SyncRoot) { _model.WarnLowCapacity = chkWarnLowCap.Checked; }
-                    if (chkWarnLowCap.Checked && cboProtocol != null)
-                    {
-                        if (cboProtocol.SelectedIndex == 3) // 3: Pylontech
-                        {
-                            ShowProtocolDifferenceTip(chkWarnLowCap, "【协议差异提示】\nPylontech (派能) 62H 告警矩阵中未定义独立的【低电量告警】位 (通过 61H SOC 或欠压告警表征)。\n该状态位为 CVTE 与 Growatt 专属。");
-                        }
-                        else if (cboProtocol.SelectedIndex == 2) // 2: Voltronic
-                        {
-                            ShowProtocolDifferenceTip(chkWarnLowCap, "【协议差异提示】\nVoltronic 协议告警列表中通过欠压状态表征，未定义独立的【低电量告警】位。\n当前协议下仅作本地仿真模拟。");
-                        }
-                    }
                 }
             };
 
@@ -2552,21 +1531,6 @@ namespace BMS_Protocol_Simulator
                 if (!_isUpdatingUi) {
                     lock (_model.SyncRoot) { _model.ProtSoftStart = chkProtSoftStart.Checked; }
                     refreshChargeDischargeLimits();
-                    if (chkProtSoftStart.Checked && cboProtocol != null)
-                    {
-                        if (cboProtocol.SelectedIndex == 3) // 3: Pylontech
-                        {
-                            ShowProtocolDifferenceTip(chkProtSoftStart, "【协议差异提示】\nPylontech (派能) 低压 RS485 协议规范中未定义【软起动失败 (SSP)】保护位。\n该标志位为 CVTE 与 Growatt 专属，当前协议下不予下发。");
-                        }
-                        else if (cboProtocol.SelectedIndex == 2) // 2: Voltronic
-                        {
-                            ShowProtocolDifferenceTip(chkProtSoftStart, "【协议差异提示】\nVoltronic 协议告警与状态矩阵 (0x0060~0x0069) 中未定义【软起动失败】保护位。\n当前协议下仅作本地仿真模拟。");
-                        }
-                        else if (cboProtocol.SelectedIndex == 4) // 4: LIB_MODBUS
-                        {
-                            ShowProtocolDifferenceTip(chkProtSoftStart, "【协议差异提示】\nLIB_MODBUS 协议规范中未定义【软起动失败】保护位。\n当前协议下不予下发。");
-                        }
-                    }
                 }
             };
 
@@ -2685,17 +1649,8 @@ namespace BMS_Protocol_Simulator
             btnExportLog = new Button(); btnExportLog.Text = "导出日志"; btnExportLog.Width = 70; btnExportLog.Height = 25; btnExportLog.Margin = new Padding(2, 1, 4, 0);
             btnExportLog.Click += BtnExportLog_Click;
 
-            btnCsvRecord = new Button
-            {
-                Text = "录制CSV",
-                Width = 72,
-                Height = 25,
-                Margin = new Padding(2, 1, 4, 0)
-            };
-            btnCsvRecord.Click += BtnCsvRecord_Click;
-
             flpLogTools.Controls.AddRange(new Control[] {
-                chkAutoScroll, chkShowTime, chkShowHex, btnClearLog, btnExportLog, btnCsvRecord
+                chkAutoScroll, chkShowTime, chkShowHex, btnClearLog, btnExportLog
             });
             pnlMon.Controls.Add(flpLogTools, 0, 2);
 
@@ -2821,6 +1776,98 @@ namespace BMS_Protocol_Simulator
             }
         }
 
+        // 根据当前选定的协议直接置灰当前协议不支持的模拟量与标志位控件 (仅在从机模拟模式下禁用，主机模式下保持启用只读回显)
+        private void UpdateProtocolControlStates()
+        {
+            bool isMaster = (_comm != null && _comm.CurrentWorkMode == WorkMode.MasterPoller);
+            int idx = (cboProtocol != null && cboProtocol.SelectedIndex >= 0) ? cboProtocol.SelectedIndex : 0;
+            // idx: 0=CVTE, 1=GROWATT, 2=VOLTRONIC, 3=PYLONTECH, 4=LIB_MODBUS, 5=JBD
+
+            if (isMaster)
+            {
+                NumericUpDown[] allNums = new NumericUpDown[] {
+                    numVoltage, numCurrent, numTemp, numSoc, numSoh,
+                    numRemCap, numFullCap, numMaxChgI, numMaxDisI, numCvVolt, numCutoffVolt, numCycleCount
+                };
+                for (int i = 0; i < allNums.Length; i++)
+                {
+                    if (allNums[i] != null)
+                    {
+                        allNums[i].Enabled = true;
+                        allNums[i].ReadOnly = true;
+                        if (allNums[i].Controls.Count > 0) allNums[i].Controls[0].Enabled = false;
+                    }
+                }
+
+                CheckBox[] allChks = new CheckBox[] {
+                    chkChgEn, chkDisEn, chkForceChg, chkFullChg, chkBalance, chkSleep,
+                    chkWarnSingleOv, chkWarnSingleUv, chkWarnGlobalOv, chkWarnGlobalUv,
+                    chkWarnOc, chkWarnHt, chkWarnLt, chkWarnVoltDiff, chkWarnLowCap,
+                    chkProtOv, chkProtUv, chkProtOc, chkProtSc, chkProtHt, chkProtLt, chkProtSys, chkProtSoftStart
+                };
+                for (int i = 0; i < allChks.Length; i++)
+                {
+                    if (allChks[i] != null)
+                    {
+                        allChks[i].Enabled = true;
+                        allChks[i].AutoCheck = false;
+                    }
+                }
+                return;
+            }
+
+            // 从机模拟模式：先恢复可编辑与自动勾选，再按协议寄存器支持矩阵精确控制 Enabled
+            NumericUpDown[] slaveNums = new NumericUpDown[] {
+                numVoltage, numCurrent, numTemp, numSoc, numSoh,
+                numRemCap, numFullCap, numMaxChgI, numMaxDisI, numCvVolt, numCutoffVolt, numCycleCount
+            };
+            for (int i = 0; i < slaveNums.Length; i++)
+            {
+                if (slaveNums[i] != null)
+                {
+                    slaveNums[i].ReadOnly = false;
+                    if (slaveNums[i].Controls.Count > 0) slaveNums[i].Controls[0].Enabled = true;
+                }
+            }
+
+            CheckBox[] slaveChks = new CheckBox[] {
+                chkChgEn, chkDisEn, chkForceChg, chkFullChg, chkBalance, chkSleep,
+                chkWarnSingleOv, chkWarnSingleUv, chkWarnGlobalOv, chkWarnGlobalUv,
+                chkWarnOc, chkWarnHt, chkWarnLt, chkWarnVoltDiff, chkWarnLowCap,
+                chkProtOv, chkProtUv, chkProtOc, chkProtSc, chkProtHt, chkProtLt, chkProtSys, chkProtSoftStart
+            };
+            for (int i = 0; i < slaveChks.Length; i++)
+            {
+                if (slaveChks[i] != null)
+                {
+                    slaveChks[i].AutoCheck = true;
+                    slaveChks[i].Enabled = true;
+                }
+            }
+
+            if (numVoltage != null) numVoltage.Enabled = true;
+            if (numCurrent != null) numCurrent.Enabled = true;
+            if (numSoc != null) numSoc.Enabled = true;
+            if (numCvVolt != null) numCvVolt.Enabled = true;
+            if (numFullCap != null) numFullCap.Enabled = true;
+            if (numMaxChgI != null) numMaxChgI.Enabled = true;
+            if (numTemp != null) numTemp.Enabled = true;
+
+            if (numCutoffVolt != null) numCutoffVolt.Enabled = (idx == 2 || idx == 3 || idx == 5);
+            if (numMaxDisI != null) numMaxDisI.Enabled = (idx == 1 || idx == 2 || idx == 3 || idx == 5);
+            if (numCycleCount != null) numCycleCount.Enabled = (idx != 2);
+            if (numRemCap != null) numRemCap.Enabled = (idx != 2);
+            if (numSoh != null) numSoh.Enabled = (idx == 0 || idx == 1 || idx == 3 || idx == 4);
+
+            if (chkForceChg != null) chkForceChg.Enabled = (idx == 0 || idx == 1 || idx == 2 || idx == 3);
+            if (chkFullChg != null) chkFullChg.Enabled = (idx == 2 || idx == 3);
+            if (chkBalance != null) chkBalance.Enabled = (idx == 0 || idx == 1 || idx == 5);
+            if (chkSleep != null) chkSleep.Enabled = (idx == 0 || idx == 1);
+            if (chkWarnVoltDiff != null) chkWarnVoltDiff.Enabled = (idx == 0 || idx == 1 || idx == 3 || idx == 5);
+            if (chkWarnLowCap != null) chkWarnLowCap.Enabled = (idx == 0 || idx == 1 || idx == 4 || idx == 5);
+            if (chkProtSoftStart != null) chkProtSoftStart.Enabled = (idx == 0 || idx == 1 || idx == 5);
+        }
+
         private void UpdateWorkModeUI()
         {
             bool isMaster = (cboWorkMode.SelectedIndex == 1);
@@ -2832,7 +1879,6 @@ namespace BMS_Protocol_Simulator
             if (isMaster)
             {
                 chkReplyAllIds.Visible = false;
-                if (lblSlaveHint != null) lblSlaveHint.Visible = false;
                 if (chkSimSilence != null) chkSimSilence.Visible = false;
                 if (chkSimCrcErr != null) chkSimCrcErr.Visible = false;
                 if (lblSimDelay != null) lblSimDelay.Visible = false;
@@ -2848,17 +1894,11 @@ namespace BMS_Protocol_Simulator
                 cboPollInterval.Visible = true;
                 btnPollPause.Visible = true;
                 if (btnSinglePoll != null) btnSinglePoll.Visible = true;
-                if (btnMasterCtrl != null) btnMasterCtrl.Visible = true;
 
-                if (pnlCombo != null) pnlCombo.Visible = false;
+                if (btnProfile3KU != null) btnProfile3KU.Visible = false;
+                if (btnProfile6KU != null) btnProfile6KU.Visible = false;
                 if (chkAutoAdapt != null) chkAutoAdapt.Visible = false;
-                if (chkDynamicSim != null)
-                {
-                    if (chkDynamicSim.Checked) chkDynamicSim.Checked = false;
-                    chkDynamicSim.Visible = false;
-                }
                 if (flpQuickPresets != null) flpQuickPresets.Enabled = false;
-                if (pnlBannerContainer != null) pnlBannerContainer.Visible = false;
                 if (lblHint != null)
                 {
                     lblHint.Text = "实时监控模式：接收外部电池遥测数据 (只读回显)";
@@ -2874,13 +1914,12 @@ namespace BMS_Protocol_Simulator
                 }
                 else
                 {
-                    lblStatusText.Text = "已进入 [主机轮询模式] (主动向从机电池下发轮询与写控制)";
+                    lblStatusText.Text = "已进入 [主机轮询模式] (主动向从机电池下发轮询指令)";
                 }
             }
             else
             {
                 chkReplyAllIds.Visible = true;
-                if (lblSlaveHint != null) lblSlaveHint.Visible = true;
                 if (chkSimSilence != null) chkSimSilence.Visible = true;
                 if (chkSimCrcErr != null) chkSimCrcErr.Visible = true;
                 if (lblSimDelay != null) lblSimDelay.Visible = true;
@@ -2896,13 +1935,11 @@ namespace BMS_Protocol_Simulator
                 cboPollInterval.Visible = false;
                 btnPollPause.Visible = false;
                 if (btnSinglePoll != null) btnSinglePoll.Visible = false;
-                if (btnMasterCtrl != null) btnMasterCtrl.Visible = false;
 
-                if (pnlCombo != null) pnlCombo.Visible = true;
+                if (btnProfile3KU != null) btnProfile3KU.Visible = true;
+                if (btnProfile6KU != null) btnProfile6KU.Visible = true;
                 if (chkAutoAdapt != null) chkAutoAdapt.Visible = true;
-                if (chkDynamicSim != null) chkDynamicSim.Visible = true;
                 if (flpQuickPresets != null) flpQuickPresets.Enabled = true;
-                if (pnlBannerContainer != null) pnlBannerContainer.Visible = true;
                 if (lblHint != null)
                 {
                     lblHint.Text = "按 Enter 或失焦自动生效";
@@ -2911,8 +1948,7 @@ namespace BMS_Protocol_Simulator
 
                 if (wasMaster)
                 {
-                    _defaultConfig = BmsDefaultConfig.Load();
-                    _model.ApplyDefaultConfig(_defaultConfig.ActiveProfile);
+                    _model.ApplyProfile(_model.ActiveProfileName);
                     SyncModelToUI();
                 }
 
@@ -2926,36 +1962,8 @@ namespace BMS_Protocol_Simulator
                 }
             }
 
-            // 主机模式下将模拟量与标志位设为只读防误触，从机模式下恢复可编辑
-            NumericUpDown[] allNums = new NumericUpDown[] {
-                numVoltage, numCurrent, numTemp, numSoc, numSoh,
-                numRemCap, numFullCap, numMaxChgI, numMaxDisI, numCvVolt, numCutoffVolt, numCycleCount
-            };
-            for (int i = 0; i < allNums.Length; i++)
-            {
-                if (allNums[i] != null)
-                {
-                    allNums[i].ReadOnly = isMaster;
-                    if (allNums[i].Controls.Count > 0) allNums[i].Controls[0].Enabled = !isMaster;
-                }
-            }
-
-            CheckBox[] allChks = new CheckBox[] {
-                chkChgEn, chkDisEn, chkForceChg, chkFullChg, chkBalance, chkSleep,
-                chkWarnSingleOv, chkWarnSingleUv, chkWarnGlobalOv, chkWarnGlobalUv,
-                chkWarnOc, chkWarnHt, chkWarnLt, chkWarnVoltDiff, chkWarnLowCap,
-                chkProtOv, chkProtUv, chkProtOc, chkProtSc, chkProtHt, chkProtLt, chkProtSys, chkProtSoftStart
-            };
-            for (int i = 0; i < allChks.Length; i++)
-            {
-                if (allChks[i] != null)
-                {
-                    allChks[i].AutoCheck = !isMaster;
-                }
-            }
-
+            UpdateProtocolControlStates();
             UpdateProtocolBadge();
-            UpdateModelMatchBanner();
         }
 
         private void Comm_OnMasterTelemetryUpdated(object sender, BmsDataModel model)
@@ -2964,53 +1972,9 @@ namespace BMS_Protocol_Simulator
             this.BeginInvoke(new Action(delegate()
             {
                 if (this.IsDisposed) return;
-                
-                // 1. 标记已收到从机数据并同步到 UI 控件
+
                 _hasMasterTelemetryReceived = true;
                 SyncModelToUI();
-                AppendCsvRecordIfActive("MasterPoller Telemetry");
-
-                // 2. 模拟量设定页面变成实时监控：触发绿框/浅绿高亮闪烁效果
-                Color successGreen = Color.FromArgb(220, 252, 231); // 柔和薄荷绿 (0xDC, 0xFC, 0xE7)
-                FlashControlColor(numVoltage, successGreen, 800);
-                FlashControlColor(numCurrent, successGreen, 800);
-                FlashControlColor(numTemp, successGreen, 800);
-                FlashControlColor(numSoc, successGreen, 800);
-                FlashControlColor(numSoh, successGreen, 800);
-                FlashControlColor(numRemCap, successGreen, 800);
-                FlashControlColor(numFullCap, successGreen, 800);
-                FlashControlColor(numMaxChgI, successGreen, 800);
-                FlashControlColor(numMaxDisI, successGreen, 800);
-                FlashControlColor(numCvVolt, successGreen, 800);
-                FlashControlColor(numCutoffVolt, successGreen, 800);
-                FlashControlColor(numCycleCount, successGreen, 800);
-
-                // 3. 状态位、告警与保护矩阵触发绿框/高亮提示
-                FlashControlColor(chkChgEn, successGreen, 800);
-                FlashControlColor(chkDisEn, successGreen, 800);
-                FlashControlColor(chkForceChg, successGreen, 800);
-                FlashControlColor(chkFullChg, successGreen, 800);
-                FlashControlColor(chkBalance, successGreen, 800);
-                FlashControlColor(chkSleep, successGreen, 800);
-
-                FlashControlColor(chkWarnSingleOv, successGreen, 800);
-                FlashControlColor(chkWarnSingleUv, successGreen, 800);
-                FlashControlColor(chkWarnGlobalOv, successGreen, 800);
-                FlashControlColor(chkWarnGlobalUv, successGreen, 800);
-                FlashControlColor(chkWarnOc, successGreen, 800);
-                FlashControlColor(chkWarnHt, successGreen, 800);
-                FlashControlColor(chkWarnLt, successGreen, 800);
-                FlashControlColor(chkWarnVoltDiff, successGreen, 800);
-                FlashControlColor(chkWarnLowCap, successGreen, 800);
-
-                FlashControlColor(chkProtOv, successGreen, 800);
-                FlashControlColor(chkProtUv, successGreen, 800);
-                FlashControlColor(chkProtOc, successGreen, 800);
-                FlashControlColor(chkProtSc, successGreen, 800);
-                FlashControlColor(chkProtHt, successGreen, 800);
-                FlashControlColor(chkProtLt, successGreen, 800);
-                FlashControlColor(chkProtSys, successGreen, 800);
-                FlashControlColor(chkProtSoftStart, successGreen, 800);
 
                 lblStatusText.Text = string.Format("✓ [主机遥测回显] 目标从机ID:{0} 遥测已更新 (时延: {1}ms | {2:HH:mm:ss})",
                     _comm.TargetSlaveId, _comm.LastResponseTimeMs, DateTime.Now);
@@ -3073,6 +2037,9 @@ namespace BMS_Protocol_Simulator
                     case 4:
                         _comm.ProtocolHandler = new LibModbusHandler();
                         break;
+                    case 5:
+                        _comm.ProtocolHandler = new JbdBinaryHandler();
+                        break;
                 }
                 if (_comm.CurrentWorkMode == WorkMode.MasterPoller)
                 {
@@ -3080,8 +2047,8 @@ namespace BMS_Protocol_Simulator
                     ClearMasterTelemetryDisplay();
                 }
             }
+            UpdateProtocolControlStates();
             UpdateProtocolBadge();
-            UpdateModelMatchBanner();
         }
 
         private void BtnConnect_Click(object sender, EventArgs e)
@@ -3125,191 +2092,6 @@ namespace BMS_Protocol_Simulator
                     }
                 }
             }
-            UpdateModelMatchBanner();
-        }
-
-        private void UpdateModelMatchBanner()
-        {
-            if (this.IsDisposed || !this.IsHandleCreated) return;
-            if (this.InvokeRequired)
-            {
-                this.BeginInvoke(new Action(UpdateModelMatchBanner));
-                return;
-            }
-
-            if (lblBannerText == null || lblBannerIcon == null || btnQuickFix == null) return;
-
-            if (_comm == null || !_comm.IsOpen)
-            {
-                if (pnlBannerContainer != null) pnlBannerContainer.Visible = (_comm != null && _comm.CurrentWorkMode == WorkMode.SlaveSimulator);
-                lblBannerIcon.Text = "○";
-                lblBannerIcon.ForeColor = Color.DimGray;
-                bool isAdapt = (_comm != null && _comm.AutoAdaptEnabled);
-                lblBannerText.Text = isAdapt 
-                    ? "串口未连接 (自适应已开启：连接后将自动监测机型与协议)" 
-                    : "串口未连接 (自适应已关闭：将按当前手动配置协议响应)";
-                lblBannerText.ForeColor = Color.DimGray;
-                btnQuickFix.Visible = false;
-                pnlModelMatchBanner.BackColor = Color.FromArgb(248, 249, 250);
-                if (_bannerTip != null)
-                {
-                    _bannerTip.SetToolTip(lblBannerText, isAdapt
-                        ? "串口未打开。打开串口后，上位机将自动监听并诊断逆变器发送的协议与机型。"
-                        : "串口未打开。当前自适应已关闭，打开串口后将使用当前选定的协议与套系参数。");
-                }
-                return;
-            }
-
-            if (_comm.CurrentWorkMode == WorkMode.MasterPoller)
-            {
-                if (pnlBannerContainer != null) pnlBannerContainer.Visible = false;
-                return;
-            }
-            else
-            {
-                if (pnlBannerContainer != null) pnlBannerContainer.Visible = true;
-            }
-
-            if (_lastDetectionResult == null || _lastDetectionResult.Protocol == DetectedProtocolType.Unknown)
-            {
-                if (_comm.AutoAdaptEnabled)
-                {
-                    lblBannerIcon.Text = "●";
-                    lblBannerIcon.ForeColor = Color.FromArgb(37, 99, 235);
-                    lblBannerText.Text = "自适应已就绪: 等待逆变器查询...";
-                    lblBannerText.ForeColor = Color.FromArgb(37, 99, 235);
-                    pnlModelMatchBanner.BackColor = Color.FromArgb(239, 246, 255);
-                    if (_bannerTip != null) _bannerTip.SetToolTip(lblBannerText, "自适应已开启：收到逆变器首包特征帧时将自动切换对应协议与机型套系。");
-                }
-                else
-                {
-                    lblBannerIcon.Text = "○";
-                    lblBannerIcon.ForeColor = Color.DimGray;
-                    lblBannerText.Text = "正在监听总线报文 (等待逆变器查询...)";
-                    lblBannerText.ForeColor = Color.DimGray;
-                    pnlModelMatchBanner.BackColor = Color.FromArgb(248, 249, 250);
-                    if (_bannerTip != null) _bannerTip.SetToolTip(lblBannerText, "串口已打开，正在监听 485 总线。收到逆变器查询后将自动诊断机型与协议。");
-                }
-                btnQuickFix.Visible = false;
-                return;
-            }
-
-            // 当前 UI 选中的协议
-            string selectedProtStr = cboProtocol.SelectedItem != null ? cboProtocol.SelectedItem.ToString() : "CVTE";
-            DetectedProtocolType currentSelectedProtocol = DetectedProtocolType.Cvte;
-            if (selectedProtStr == "GROWATT") currentSelectedProtocol = DetectedProtocolType.Growatt;
-            else if (selectedProtStr == "VOLTRONIC") currentSelectedProtocol = DetectedProtocolType.Voltronic;
-            else if (selectedProtStr == "PYLONTECH") currentSelectedProtocol = DetectedProtocolType.Pylontech;
-            else if (selectedProtStr == "LIB_MODBUS") currentSelectedProtocol = DetectedProtocolType.LibModbus;
-
-            // 当前 UI 选中的套系
-            string currentActiveProfile = _defaultConfig.ActiveProfileName ?? "3KU";
-
-            // 1. 协议不匹配检查
-            if (_lastDetectionResult.Protocol != currentSelectedProtocol)
-            {
-                lblBannerIcon.Text = "✕";
-                lblBannerIcon.ForeColor = Color.FromArgb(185, 28, 28);
-                string detectedProtName = _lastDetectionResult.Protocol == DetectedProtocolType.LibModbus ? "LIB_MODBUS" : _lastDetectionResult.Protocol.ToString().ToUpper();
-                lblBannerText.Text = string.Format("协议不匹配: 机器为 [{0}]，当前选择 [{1}]", detectedProtName, selectedProtStr);
-                lblBannerText.ForeColor = Color.FromArgb(185, 28, 28); // 红色
-                pnlModelMatchBanner.BackColor = Color.FromArgb(254, 242, 242);
-
-                btnQuickFix.Visible = true;
-                btnQuickFix.Text = string.Format("切换为 {0}", detectedProtName);
-                btnQuickFix.Tag = "PROTOCOL:" + detectedProtName;
-
-                string tipStr = string.Format("检测到逆变器正在发送【{0}】协议查询，但当前上位机选为【{1}】。\n点击按钮可切换为【{0}】协议。", detectedProtName, selectedProtStr);
-                if (_bannerTip != null)
-                {
-                    _bannerTip.SetToolTip(lblBannerText, tipStr);
-                    _bannerTip.SetToolTip(btnQuickFix, tipStr);
-                }
-                return;
-            }
-
-            // 2. 机型套系不匹配检查
-            string detectedModelStr = _lastDetectionResult.Model == InverterModel.INV_3KU ? "3KU" : (_lastDetectionResult.Model == InverterModel.INV_6KU ? "6KU" : "未知");
-            if (_lastDetectionResult.Model != InverterModel.Unknown && detectedModelStr != currentActiveProfile)
-            {
-                lblBannerIcon.Text = "!";
-                lblBannerIcon.ForeColor = Color.FromArgb(180, 83, 9);
-                lblBannerText.Text = string.Format("套系不一致: 机器为 [{0}]，当前套系为 [{1}]", detectedModelStr, currentActiveProfile);
-                lblBannerText.ForeColor = Color.FromArgb(180, 83, 9); // 橙色
-                pnlModelMatchBanner.BackColor = Color.FromArgb(255, 251, 235);
-
-                btnQuickFix.Visible = true;
-                btnQuickFix.Text = string.Format("应用 {0}", detectedModelStr);
-                btnQuickFix.Tag = "MODEL:" + detectedModelStr;
-
-                string tipStr = string.Format("检测到连接机器为【{0}】({1})，但当前所选默认参数为【{2}】。\n点击按钮可应用【{0}】默认参数套系。",
-                    detectedModelStr, detectedModelStr == "6KU" ? "48V" : "24V", currentActiveProfile);
-                if (_bannerTip != null)
-                {
-                    _bannerTip.SetToolTip(lblBannerText, tipStr);
-                    _bannerTip.SetToolTip(btnQuickFix, tipStr);
-                }
-                return;
-            }
-
-            // 3. 完全匹配
-            lblBannerIcon.Text = "✓";
-            lblBannerIcon.ForeColor = Color.FromArgb(21, 128, 61);
-            string modelDesc = _lastDetectionResult.Model != InverterModel.Unknown ? ("[" + detectedModelStr + "] ") : "";
-            lblBannerText.Text = string.Format("机型与协议匹配: {0}{1} ({2}) 正常通信", modelDesc, selectedProtStr, currentActiveProfile == "6KU" ? "48V" : "24V");
-            lblBannerText.ForeColor = Color.FromArgb(21, 128, 61); // 绿色
-            pnlModelMatchBanner.BackColor = Color.FromArgb(240, 253, 244);
-            btnQuickFix.Visible = false;
-
-            if (_bannerTip != null)
-            {
-                _bannerTip.SetToolTip(lblBannerText, string.Format("机型与协议完全匹配 ({0}{1})，BMS 数据交互正常。", modelDesc, selectedProtStr));
-            }
-        }
-
-        private void BtnQuickFix_Click(object sender, EventArgs e)
-        {
-            if (btnQuickFix.Tag == null) return;
-            string tag = btnQuickFix.Tag.ToString();
-            if (tag.StartsWith("PROTOCOL:"))
-            {
-                string targetProt = tag.Substring("PROTOCOL:".Length);
-                for (int i = 0; i < cboProtocol.Items.Count; i++)
-                {
-                    if (cboProtocol.Items[i].ToString().Equals(targetProt, StringComparison.OrdinalIgnoreCase))
-                    {
-                        cboProtocol.SelectedIndex = i;
-                        break;
-                    }
-                }
-                lblStatusText.Text = string.Format("已切换协议为: {0}", targetProt);
-            }
-            else if (tag.StartsWith("MODEL:"))
-            {
-                string targetModel = tag.Substring("MODEL:".Length);
-                _defaultConfig = BmsDefaultConfig.Load();
-                _defaultConfig.ActiveProfileName = targetModel;
-                _defaultConfig.Save();
-                if (targetModel == "6KU")
-                    _model.ApplyDefaultConfig(_defaultConfig.Profile6KU);
-                else
-                    _model.ApplyDefaultConfig(_defaultConfig.Profile3KU);
-                SyncModelToUI();
-                CommitAllControls();
-                lblStatusText.Text = string.Format("已应用 [{0}] 默认参数套系", targetModel);
-            }
-            UpdateModelMatchBanner();
-        }
-
-        private void Comm_OnInverterDetected(object sender, DetectionEventArgs e)
-        {
-            if (this.IsDisposed || !this.IsHandleCreated) return;
-            this.BeginInvoke(new Action(delegate()
-            {
-                if (this.IsDisposed) return;
-                _lastDetectionResult = e.Result;
-                UpdateModelMatchBanner();
-            }));
         }
 
         private void Comm_OnAutoAdapted(object sender, AutoAdaptEventArgs e)
@@ -3319,8 +2101,7 @@ namespace BMS_Protocol_Simulator
             {
                 if (this.IsDisposed) return;
 
-                // 同步 UI 协议选择
-                string targetProtName = e.Protocol == DetectedProtocolType.LibModbus ? "LIB_MODBUS" : e.Protocol.ToString().ToUpper();
+                string targetProtName = e.Protocol == DetectedProtocolType.LibModbus ? "LIB_MODBUS" : (e.Protocol == DetectedProtocolType.Jbd ? "JBD" : e.Protocol.ToString().ToUpper());
                 for (int i = 0; i < cboProtocol.Items.Count; i++)
                 {
                     if (cboProtocol.Items[i].ToString().Equals(targetProtName, StringComparison.OrdinalIgnoreCase))
@@ -3335,26 +2116,14 @@ namespace BMS_Protocol_Simulator
                     }
                 }
 
-                // 若识别出机型，同步 UI 套系显示 (后台线程已在首帧回复前同步完成 Model 套系更新)
                 if (e.Model != InverterModel.Unknown)
                 {
-                    _defaultConfig = BmsDefaultConfig.Load();
-                    string targetModelName = e.Model == InverterModel.INV_3KU ? "3KU" : "6KU";
-                    if (_defaultConfig.ActiveProfileName != targetModelName)
-                    {
-                        _defaultConfig.ActiveProfileName = targetModelName;
-                        _defaultConfig.Save();
-                        if (targetModelName == "6KU")
-                            _model.ApplyDefaultConfig(_defaultConfig.Profile6KU);
-                        else
-                            _model.ApplyDefaultConfig(_defaultConfig.Profile3KU);
-                    }
                     SyncModelToUI();
                     CommitAllControls();
                 }
 
+                UpdateProtocolControlStates();
                 UpdateProtocolBadge();
-                UpdateModelMatchBanner();
                 lblStatusText.Text = string.Format("自适应生效：已匹配为 [{0}] {1}", e.Model != InverterModel.Unknown ? (e.Model == InverterModel.INV_3KU ? "3KU" : "6KU") : "自动", targetProtName);
             }));
         }
@@ -3434,11 +2203,6 @@ namespace BMS_Protocol_Simulator
         private void Comm_OnLogEvent(object sender, LogEventArgs e)
         {
             if (this.IsDisposed || !this.IsHandleCreated) return;
-
-            if (e.IsTx && _comm != null && _comm.CurrentWorkMode == WorkMode.SlaveSimulator)
-            {
-                AppendCsvRecordIfActive(e.Summary);
-            }
 
             this.BeginInvoke(new Action(delegate()
             {
@@ -3584,96 +2348,6 @@ namespace BMS_Protocol_Simulator
             }
         }
 
-        private void BtnCsvRecord_Click(object sender, EventArgs e)
-        {
-            lock (_csvLock)
-            {
-                if (!string.IsNullOrEmpty(_csvRecordPath))
-                {
-                    string finishedPath = _csvRecordPath;
-                    _csvRecordPath = null;
-                    btnCsvRecord.Text = "录制CSV";
-                    lblStatusText.Text = "CSV 遥测录制已停止，文件已保存至: " + finishedPath;
-                    return;
-                }
-            }
-
-            using (SaveFileDialog sfd = new SaveFileDialog())
-            {
-                sfd.Filter = "CSV 遥测报表 (*.csv)|*.csv";
-                sfd.FileName = string.Format("BMS_Telemetry_{0:yyyyMMdd_HHmmss}.csv", DateTime.Now);
-                if (sfd.ShowDialog() == DialogResult.OK)
-                {
-                    try
-                    {
-                        string header = "Timestamp,WorkMode,Protocol,Voltage(V),Current(A),Temp(C),SOC(%),SOH(%),RemCap(Ah),FullCap(Ah),MaxChgI(A),MaxDisI(A),CVVolt(V),CutoffVolt(V),CanChg,CanDis,ForceChg,Summary\r\n";
-                        File.WriteAllText(sfd.FileName, header, new UTF8Encoding(true));
-                        lock (_csvLock)
-                        {
-                            _csvRecordPath = sfd.FileName;
-                        }
-                        btnCsvRecord.Text = "停止录制";
-                        lblStatusText.Text = "正在实时录制 CSV: " + Path.GetFileName(sfd.FileName);
-                    }
-                    catch (Exception ex)
-                    {
-                        MessageBox.Show("创建 CSV 文件失败: " + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    }
-                }
-            }
-        }
-
-        private void AppendCsvRecordIfActive(string summary)
-        {
-            string path;
-            lock (_csvLock)
-            {
-                path = _csvRecordPath;
-            }
-            if (string.IsNullOrEmpty(path)) return;
-
-            try
-            {
-                string line;
-                string modeStr = (_comm != null && _comm.CurrentWorkMode == WorkMode.MasterPoller) ? "MasterPoller" : "SlaveSimulator";
-                string protStr = (_comm != null && _comm.ProtocolHandler != null) ? _comm.ProtocolHandler.ProtocolName : "Unknown";
-                string cleanSummary = (summary ?? string.Empty).Replace(",", ";").Replace("\r", " ").Replace("\n", " ");
-
-                lock (_model.SyncRoot)
-                {
-                    line = string.Format(CultureInfo.InvariantCulture,
-                        "{0:yyyy-MM-dd HH:mm:ss.fff},{1},{2},{3:F2},{4:F2},{5:F1},{6:F0},{7:F0},{8:F2},{9:F2},{10:F2},{11:F2},{12:F2},{13:F2},{14},{15},{16},\"{17}\"\r\n",
-                        DateTime.Now,
-                        modeStr,
-                        protStr,
-                        _model.Voltage,
-                        _model.Current,
-                        _model.Temperature,
-                        _model.SOC,
-                        _model.SOH,
-                        _model.RemainingCapacity,
-                        _model.FullCapacity,
-                        _model.MaxChargeCurrent,
-                        _model.MaxDischargeCurrent,
-                        _model.CVVoltage,
-                        _model.CutoffVoltage,
-                        _model.CanCharge ? 1 : 0,
-                        _model.CanDischarge ? 1 : 0,
-                        _model.StatusForceCharge ? 1 : 0,
-                        cleanSummary);
-                }
-
-                lock (_csvLock)
-                {
-                    if (!string.IsNullOrEmpty(_csvRecordPath))
-                    {
-                        File.AppendAllText(_csvRecordPath, line, new UTF8Encoding(false));
-                    }
-                }
-            }
-            catch { }
-        }
-
         private void UpdateStatsLabels()
         {
             lblRxCount.Text = string.Format("RX: {0}", _comm.RxCount);
@@ -3738,11 +2412,6 @@ namespace BMS_Protocol_Simulator
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            if (_dynamicSimTimer != null)
-            {
-                try { _dynamicSimTimer.Stop(); _dynamicSimTimer.Dispose(); _dynamicSimTimer = null; } catch { }
-            }
-
             if (_flashTimers != null)
             {
                 foreach (Timer tmr in _flashTimers.Values)
@@ -3758,16 +2427,6 @@ namespace BMS_Protocol_Simulator
                     }
                 }
                 _flashTimers.Clear();
-            }
-
-            if (_paramTip != null)
-            {
-                try { _paramTip.Dispose(); _paramTip = null; } catch { }
-            }
-
-            if (_bannerTip != null)
-            {
-                try { _bannerTip.Dispose(); _bannerTip = null; } catch { }
             }
 
             if (_comm != null)

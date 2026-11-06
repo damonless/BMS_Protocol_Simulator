@@ -66,6 +66,141 @@ namespace BMS_Protocol_Simulator
         }
     }
 
+    public static class JbdChecksum
+    {
+        public static ushort Calculate(byte[] buffer, int offset, int count)
+        {
+            if (buffer == null || count <= 0 || offset < 0 || offset + count > buffer.Length) return 0;
+            int sum = 0;
+            for (int i = offset; i < offset + count; i++)
+            {
+                sum += buffer[i];
+            }
+            return (ushort)((~sum + 1) & 0xFFFF);
+        }
+
+        public static bool VerifyRequest(byte[] buffer, int offset, int totalLength, out int frameCoreLen, out int callbackLen)
+        {
+            frameCoreLen = 0;
+            callbackLen = 0;
+            if (buffer == null || totalLength < 7 || offset < 0 || offset + totalLength > buffer.Length)
+                return false;
+
+            if (buffer[offset] != 0xDD)
+                return false;
+
+            byte rw = buffer[offset + 1];
+            if (rw != 0xA5 && rw != 0x5A)
+                return false;
+
+            byte dataLen = buffer[offset + 3];
+            frameCoreLen = 4 + dataLen + 3;
+
+            if (totalLength < frameCoreLen)
+                return false;
+
+            if (buffer[offset + frameCoreLen - 1] != 0x77)
+                return false;
+
+            ushort expectedChk = (ushort)((buffer[offset + 4 + dataLen] << 8) | buffer[offset + 4 + dataLen + 1]);
+            ushort calcChk = Calculate(buffer, offset + 2, 2 + dataLen);
+            if (expectedChk != calcChk)
+                return false;
+
+            int extra = totalLength - frameCoreLen;
+            if (extra > 0)
+            {
+                int maxCb = Math.Min(4, extra);
+                for (int k = 0; k < maxCb; k++)
+                {
+                    if (buffer[offset + frameCoreLen + k] == 0xDD) break;
+                    callbackLen++;
+                }
+            }
+            return true;
+        }
+
+        public static bool VerifyResponse(byte[] buffer, int offset, int totalLength, out int frameCoreLen)
+        {
+            frameCoreLen = 0;
+            if (buffer == null || totalLength < 7 || offset < 0 || offset + totalLength > buffer.Length)
+                return false;
+
+            if (buffer[offset] != 0xDD)
+                return false;
+
+            byte status = buffer[offset + 2];
+            if (status != 0x00 && status != 0x80 && status != 0x81 && status != 0x82 && status != 0x83 && status != 0x84)
+                return false;
+
+            byte dataLen = buffer[offset + 3];
+            frameCoreLen = 4 + dataLen + 3;
+
+            if (totalLength < frameCoreLen)
+                return false;
+
+            if (buffer[offset + frameCoreLen - 1] != 0x77)
+                return false;
+
+            ushort expectedChk = (ushort)((buffer[offset + 4 + dataLen] << 8) | buffer[offset + 4 + dataLen + 1]);
+            ushort calcChk = Calculate(buffer, offset + 2, 2 + dataLen);
+            if (expectedChk != calcChk)
+                return false;
+
+            return true;
+        }
+
+        public static byte[] BuildResponse(byte cmd, byte status, byte[] data, byte[] callbackId = null)
+        {
+            int dataLen = data != null ? data.Length : 0;
+            int cbLen = callbackId != null ? Math.Min(4, callbackId.Length) : 0;
+            int totalLen = 7 + dataLen + cbLen;
+            byte[] resp = new byte[totalLen];
+            resp[0] = 0xDD;
+            resp[1] = cmd;
+            resp[2] = status;
+            resp[3] = (byte)dataLen;
+            if (dataLen > 0)
+            {
+                Array.Copy(data, 0, resp, 4, dataLen);
+            }
+            ushort chk = Calculate(resp, 2, 2 + dataLen);
+            resp[4 + dataLen] = (byte)(chk >> 8);
+            resp[4 + dataLen + 1] = (byte)(chk & 0xFF);
+            resp[4 + dataLen + 2] = 0x77;
+            if (cbLen > 0)
+            {
+                Array.Copy(callbackId, 0, resp, 7 + dataLen, cbLen);
+            }
+            return resp;
+        }
+
+        public static byte[] BuildRequest(byte rw, byte cmd, byte[] data, byte[] callbackId = null)
+        {
+            int dataLen = data != null ? data.Length : 0;
+            int cbLen = callbackId != null ? Math.Min(4, callbackId.Length) : 0;
+            int totalLen = 7 + dataLen + cbLen;
+            byte[] req = new byte[totalLen];
+            req[0] = 0xDD;
+            req[1] = rw;
+            req[2] = cmd;
+            req[3] = (byte)dataLen;
+            if (dataLen > 0)
+            {
+                Array.Copy(data, 0, req, 4, dataLen);
+            }
+            ushort chk = Calculate(req, 2, 2 + dataLen);
+            req[4 + dataLen] = (byte)(chk >> 8);
+            req[4 + dataLen + 1] = (byte)(chk & 0xFF);
+            req[4 + dataLen + 2] = 0x77;
+            if (cbLen > 0)
+            {
+                Array.Copy(callbackId, 0, req, 7 + dataLen, cbLen);
+            }
+            return req;
+        }
+    }
+
     public interface IBmsProtocolHandler
     {
         string ProtocolName { get; }
@@ -74,8 +209,6 @@ namespace BMS_Protocol_Simulator
         bool TryProcessQuery(byte[] rxBuffer, int rxLength, BmsDataModel model, bool replyAllIds, int specificId, out byte[] txResponse, out string decodedInfo);
         // 主机轮询模式：构造发送给真实电池包的查询帧
         byte[] BuildMasterPollFrame(byte targetId, int pollPhase);
-        // 主机模式：构造向从机下发的控制帧 (如关机、写参数等)
-        byte[] BuildMasterControlFrame(byte targetId, string commandType, object param, out string description);
         // 主机轮询模式：解析真实电池包回复的报文并更新至 model
         bool TryDecodeMasterResponse(byte[] rxBuffer, int rxLength, BmsDataModel model, out string decodedInfo);
     }
@@ -347,51 +480,6 @@ namespace BMS_Protocol_Simulator
             frame[1] = 0x03;
             frame[2] = 0x00; frame[3] = 0x20; // 0x0020
             frame[4] = 0x00; frame[5] = 0x0D; // 13 寄存器 (0x0020~0x002C 包含循环次数)
-            ushort crc = ModbusCrc.Calculate(frame, 6);
-            frame[6] = (byte)(crc >> 8);
-            frame[7] = (byte)(crc & 0xFF);
-            return frame;
-        }
-
-        public byte[] BuildMasterControlFrame(byte targetId, string commandType, object param, out string description)
-        {
-            ushort regAddr = 0;
-            ushort regVal = 0;
-            description = "";
-
-            if (commandType == "WRITE_MAX_CHG_CURRENT")
-            {
-                double currentA = param is double ? (double)param : 100.0;
-                regAddr = 0x0029;
-                regVal = (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(currentA * 100)));
-                description = string.Format("[CVTE 主机下发] 写最大充电电流: {0:F1}A (0x{1:X4}=0x{2:X4})", currentA, regAddr, regVal);
-            }
-            else if (commandType == "WRITE_CV_VOLT")
-            {
-                double cvV = param is double ? (double)param : 56.0;
-                regAddr = 0x002A;
-                regVal = (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(cvV * 100)));
-                description = string.Format("[CVTE 主机下发] 写 CV 恒压点: {0:F2}V (0x{1:X4}=0x{2:X4})", cvV, regAddr, regVal);
-            }
-            else if (commandType == "FORCE_CHARGE")
-            {
-                regAddr = 0x0020;
-                regVal = 0x1060; // 充电+放电使能 + 强制充电请求 Bit12
-                description = string.Format("[CVTE 主机下发] 触发强制充电控制 (0x{0:X4}=0x{1:X4})", regAddr, regVal);
-            }
-            else
-            {
-                description = "[CVTE] 不支持的主机控制指令: " + commandType;
-                return null;
-            }
-
-            byte[] frame = new byte[8];
-            frame[0] = targetId;
-            frame[1] = 0x06; // 写单个寄存器
-            frame[2] = (byte)(regAddr >> 8);
-            frame[3] = (byte)(regAddr & 0xFF);
-            frame[4] = (byte)(regVal >> 8);
-            frame[5] = (byte)(regVal & 0xFF);
             ushort crc = ModbusCrc.Calculate(frame, 6);
             frame[6] = (byte)(crc >> 8);
             frame[7] = (byte)(crc & 0xFF);
@@ -745,58 +833,6 @@ namespace BMS_Protocol_Simulator
             frame[1] = 0x03;
             frame[2] = 0x00; frame[3] = 0x13; // 0x0013 (从状态字开始读)
             frame[4] = 0x00; frame[5] = 0x11; // 17 寄存器 (0x0013~0x0023 覆盖状态、告警、模拟量与充放电限流)
-            ushort crc = ModbusCrc.Calculate(frame, 6);
-            frame[6] = (byte)(crc >> 8);
-            frame[7] = (byte)(crc & 0xFF);
-            return frame;
-        }
-
-        public byte[] BuildMasterControlFrame(byte targetId, string commandType, object param, out string description)
-        {
-            ushort regAddr = 0;
-            ushort regVal = 0;
-            description = "";
-
-            if (commandType == "WRITE_MAX_CHG_CURRENT")
-            {
-                double currentA = param is double ? (double)param : 100.0;
-                regAddr = 0x0019;
-                regVal = (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(currentA * 100)));
-                description = string.Format("[GROWATT 主机下发] 写最大充电电流: {0:F1}A (0x{1:X4}=0x{2:X4})", currentA, regAddr, regVal);
-            }
-            else if (commandType == "WRITE_MAX_DIS_CURRENT")
-            {
-                double currentA = param is double ? (double)param : 100.0;
-                regAddr = 0x0023;
-                regVal = (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(currentA * 100)));
-                description = string.Format("[GROWATT 主机下发] 写最大放电电流: {0:F1}A (0x{1:X4}=0x{2:X4})", currentA, regAddr, regVal);
-            }
-            else if (commandType == "WRITE_CV_VOLT")
-            {
-                double cvV = param is double ? (double)param : 56.0;
-                regAddr = 0x0021;
-                regVal = (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(cvV * 100)));
-                description = string.Format("[GROWATT 主机下发] 写 CV 恒压点: {0:F2}V (0x{1:X4}=0x{2:X4})", cvV, regAddr, regVal);
-            }
-            else if (commandType == "FORCE_CHARGE")
-            {
-                regAddr = 0x0013;
-                regVal = 0x1060; // 充电+放电使能 + 强制充电请求 Bit12
-                description = string.Format("[GROWATT 主机下发] 触发强制充电控制 (0x{0:X4}=0x{1:X4})", regAddr, regVal);
-            }
-            else
-            {
-                description = "[GROWATT] 不支持的主机控制指令: " + commandType;
-                return null;
-            }
-
-            byte[] frame = new byte[8];
-            frame[0] = targetId;
-            frame[1] = 0x06; // 写单个寄存器
-            frame[2] = (byte)(regAddr >> 8);
-            frame[3] = (byte)(regAddr & 0xFF);
-            frame[4] = (byte)(regVal >> 8);
-            frame[5] = (byte)(regVal & 0xFF);
             ushort crc = ModbusCrc.Calculate(frame, 6);
             frame[6] = (byte)(crc >> 8);
             frame[7] = (byte)(crc & 0xFF);
@@ -1170,65 +1206,6 @@ namespace BMS_Protocol_Simulator
             {
                 frame[2] = 0x00; frame[3] = 0x70; frame[4] = 0x00; frame[5] = 0x05; // 0x0070~0x0074 CV/截止点/最大充放限流/状态字
             }
-            ushort crc = ModbusCrc.Calculate(frame, 6);
-            frame[6] = (byte)(crc >> 8);
-            frame[7] = (byte)(crc & 0xFF);
-            return frame;
-        }
-
-        public byte[] BuildMasterControlFrame(byte targetId, string commandType, object param, out string description)
-        {
-            ushort regAddr = 0;
-            ushort regVal = 0;
-            description = "";
-
-            if (commandType == "WRITE_MAX_CHG_CURRENT")
-            {
-                double currentA = param is double ? (double)param : 100.0;
-                regAddr = 0x0072;
-                regVal = (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(currentA * 10)));
-                description = string.Format("[VOLTRONIC 主机下发] 写最大充电限流: {0:F1}A (0x{1:X4}=0x{2:X4})", currentA, regAddr, regVal);
-            }
-            else if (commandType == "WRITE_MAX_DIS_CURRENT")
-            {
-                double currentA = param is double ? (double)param : 100.0;
-                regAddr = 0x0073;
-                regVal = (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(currentA * 10)));
-                description = string.Format("[VOLTRONIC 主机下发] 写最大放电限流: {0:F1}A (0x{1:X4}=0x{2:X4})", currentA, regAddr, regVal);
-            }
-            else if (commandType == "WRITE_CV_VOLT")
-            {
-                double cvV = param is double ? (double)param : 56.0;
-                regAddr = 0x0070;
-                regVal = (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(cvV * 10)));
-                description = string.Format("[VOLTRONIC 主机下发] 写 CV 恒压点: {0:F1}V (0x{1:X4}=0x{2:X4})", cvV, regAddr, regVal);
-            }
-            else if (commandType == "WRITE_CUTOFF_VOLT")
-            {
-                double cutV = param is double ? (double)param : 42.0;
-                regAddr = 0x0071;
-                regVal = (ushort)Math.Max(0, Math.Min(65535, (int)Math.Round(cutV * 10)));
-                description = string.Format("[VOLTRONIC 主机下发] 写放电截止点: {0:F1}V (0x{1:X4}=0x{2:X4})", cutV, regAddr, regVal);
-            }
-            else if (commandType == "FORCE_CHARGE")
-            {
-                regAddr = 0x0074;
-                regVal = 0x00E8; // Bit 7(充电使能) + Bit 6(放电使能) + Bit 5(请求强充) + Bit 3(请求满充)
-                description = string.Format("[VOLTRONIC 主机下发] 触发强制充电控制字 (0x{0:X4}=0x{1:X4})", regAddr, regVal);
-            }
-            else
-            {
-                description = "[VOLTRONIC] 不支持的主机控制指令: " + commandType;
-                return null;
-            }
-
-            byte[] frame = new byte[8];
-            frame[0] = targetId;
-            frame[1] = 0x06; // 写单个寄存器
-            frame[2] = (byte)(regAddr >> 8);
-            frame[3] = (byte)(regAddr & 0xFF);
-            frame[4] = (byte)(regVal >> 8);
-            frame[5] = (byte)(regVal & 0xFF);
             ushort crc = ModbusCrc.Calculate(frame, 6);
             frame[6] = (byte)(crc >> 8);
             frame[7] = (byte)(crc & 0xFF);
@@ -1780,25 +1757,6 @@ namespace BMS_Protocol_Simulator
             return Encoding.ASCII.GetBytes(full);
         }
 
-        public byte[] BuildMasterControlFrame(byte targetId, string commandType, object param, out string description)
-        {
-            description = "";
-            if (commandType == "SHUTDOWN")
-            {
-                string cmd = string.Format("~20{0:X2}4664E00201", targetId);
-                byte[] cmdBytes = Encoding.ASCII.GetBytes(cmd);
-                ushort chk = PylonChecksum.Calculate(cmdBytes, 1, cmdBytes.Length - 1);
-                string full = cmd + chk.ToString("X4") + "\r";
-                description = string.Format("[PYLONTECH 主机下发] 64H 电池系统关机指令 (目标ID: {0:X2})", targetId);
-                return Encoding.ASCII.GetBytes(full);
-            }
-            else
-            {
-                description = "[PYLONTECH] 不支持的主机控制指令: " + commandType;
-                return null;
-            }
-        }
-
         public bool TryDecodeMasterResponse(byte[] rxBuffer, int rxLength, BmsDataModel model, out string decodedInfo)
         {
             decodedInfo = "";
@@ -2344,12 +2302,6 @@ namespace BMS_Protocol_Simulator
             return frame;
         }
 
-        public byte[] BuildMasterControlFrame(byte targetId, string commandType, object param, out string description)
-        {
-            description = "[LIB_MODBUS] 协议规范 (REV1.30) 为纯只读协议 (仅支持 0x04/0x11)，不支持主机写控制指令: " + commandType;
-            return null;
-        }
-
         public bool TryDecodeMasterResponse(byte[] rxBuffer, int rxLength, BmsDataModel model, out string decodedInfo)
         {
             decodedInfo = "";
@@ -2487,6 +2439,677 @@ namespace BMS_Protocol_Simulator
         }
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // 6. JBD (RS485/UART V12) 协议处理器 ("JBD Software board universal protocol V12")
+    // ─────────────────────────────────────────────────────────────
+    public class JbdBinaryHandler : IBmsProtocolHandler
+    {
+        private bool _inFactoryMode = false;
+        private bool _heatingEnabled = false;
+        private bool _softLockChgMos = false;
+        private bool _softLockDisMos = false;
+
+        public bool InFactoryMode
+        {
+            get { return _inFactoryMode; }
+        }
+
+        public string ProtocolName
+        {
+            get { return "JBD (RS485/UART V12)"; }
+        }
+
+        public int MasterPollPhaseCount
+        {
+            get { return 2; }
+        }
+
+        public bool TryProcessQuery(byte[] rxBuffer, int rxLength, BmsDataModel model, bool replyAllIds, int specificId, out byte[] txResponse, out string decodedInfo)
+        {
+            txResponse = null;
+            decodedInfo = "";
+
+            int coreLen, cbLen;
+            if (!JbdChecksum.VerifyRequest(rxBuffer, 0, rxLength, out coreLen, out cbLen))
+                return false;
+
+            byte[] callbackId = null;
+            if (cbLen > 0)
+            {
+                callbackId = new byte[cbLen];
+                Array.Copy(rxBuffer, coreLen, callbackId, 0, cbLen);
+            }
+
+            byte rw = rxBuffer[1];
+            byte cmd = rxBuffer[2];
+            byte reqDataLen = rxBuffer[3];
+
+            lock (model.SyncRoot)
+            {
+                // ── 1. 读寄存器指令 (RW == 0xA5) ──
+                if (rw == 0xA5)
+                {
+                    if (cmd == 0x03)
+                    {
+                        // 0x03: 读基本信息与状态 (36 字节)
+                        byte[] data = new byte[36];
+
+                        // Bytes 0..1: 总电压 (10mV)
+                        ushort uVolt = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.Voltage * 100.0)));
+                        data[0] = (byte)(uVolt >> 8);
+                        data[1] = (byte)(uVolt & 0xFF);
+
+                        // Bytes 2..3: 电流 (10mA, 有符号补码)
+                        short sCurr = (short)Math.Max(-32768, Math.Min(32767, Math.Round(model.Current * 100.0)));
+                        data[2] = (byte)((ushort)sCurr >> 8);
+                        data[3] = (byte)((ushort)sCurr & 0xFF);
+
+                        // Bytes 4..5: 剩余容量 (10mAh)
+                        ushort uRemCap = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.RemainingCapacity * 100.0)));
+                        data[4] = (byte)(uRemCap >> 8);
+                        data[5] = (byte)(uRemCap & 0xFF);
+
+                        // Bytes 6..7: 满充容量 (10mAh)
+                        ushort uFullCap = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.FullCapacity * 100.0)));
+                        data[6] = (byte)(uFullCap >> 8);
+                        data[7] = (byte)(uFullCap & 0xFF);
+
+                        // Bytes 8..9: 循环次数
+                        ushort uCycles = (ushort)Math.Max(0, Math.Min(65535, model.CycleCount));
+                        data[8] = (byte)(uCycles >> 8);
+                        data[9] = (byte)(uCycles & 0xFF);
+
+                        // Bytes 10..11: 生产日期 (0x2078 -> 2016-03-24)
+                        data[10] = 0x20;
+                        data[11] = 0x78;
+
+                        // Bytes 12..13: 均衡状态低字节 (1..16串)
+                        ushort eqLow = model.StatusBalancing ? (ushort)0x0001 : (ushort)0x0000;
+                        data[12] = (byte)(eqLow >> 8);
+                        data[13] = (byte)(eqLow & 0xFF);
+
+                        // Bytes 14..15: 均衡状态高字节 (17..32串)
+                        data[14] = 0x00;
+                        data[15] = 0x00;
+
+                        // Bytes 16..17: 保护状态字 (2 字节)
+                        ushort prot = 0;
+                        if (model.ProtOverVolt) prot |= (0x0001 | 0x0004);
+                        if (model.ProtUnderVolt) prot |= (0x0002 | 0x0008);
+                        if (model.ProtHighTemp) prot |= (0x0010 | 0x0040);
+                        if (model.ProtUnderTemp) prot |= (0x0020 | 0x0080);
+                        if (model.ProtOverCurrent)
+                        {
+                            if (model.Current > 0) prot |= 0x0100;
+                            else if (model.Current < 0) prot |= 0x0200;
+                            else prot |= (0x0100 | 0x0200);
+                        }
+                        if (model.ProtShortCircuit) prot |= 0x0400;
+                        if (model.ProtSystemFault) prot |= 0x0800;
+                        if (model.ProtSoftStart || (_softLockChgMos && _softLockDisMos)) prot |= 0x1000;
+                        data[16] = (byte)(prot >> 8);
+                        data[17] = (byte)(prot & 0xFF);
+
+                        // Byte 18: 软件版本 (V1.0)
+                        data[18] = 0x10;
+
+                        // Byte 19: RSOC (0..100)
+                        data[19] = (byte)Math.Max(0, Math.Min(100, Math.Round(model.SOC)));
+
+                        // Byte 20: FET 控制状态字
+                        byte fet = 0;
+                        if (model.CanCharge && !_softLockChgMos) fet |= 0x01;
+                        if (model.CanDischarge && !_softLockDisMos) fet |= 0x02;
+                        if (model.CanCharge && model.MaxChargeCurrent > 0) fet |= 0x04;
+                        if (_heatingEnabled) fet |= 0x08;
+                        data[20] = fet;
+
+                        // Byte 21: 电池串数
+                        byte strings = (model.Voltage < 35.0) ? (byte)8 : (byte)16;
+                        data[21] = strings;
+
+                        // Byte 22: NTC 探头数量
+                        data[22] = 0x02;
+
+                        // Bytes 23..26: NTC 1 & NTC 2 (0.1K, 2731 + T*10)
+                        int tK = 2731 + (int)Math.Round(model.Temperature * 10.0);
+                        if (tK < 0) tK = 0;
+                        if (tK > 65535) tK = 65535;
+                        ushort uTk = (ushort)tK;
+                        data[23] = (byte)(uTk >> 8);
+                        data[24] = (byte)(uTk & 0xFF);
+                        data[25] = (byte)(uTk >> 8);
+                        data[26] = (byte)(uTk & 0xFF);
+
+                        // Byte 27: 湿度 (50%)
+                        data[27] = 50;
+
+                        // Bytes 28..29: 告警状态字 (2 字节)
+                        ushort alarm = 0;
+                        if (model.WarnSingleOverVolt) alarm |= 0x0001;
+                        if (model.WarnSingleUnderVolt) alarm |= 0x0002;
+                        if (model.WarnGlobalOverVolt) alarm |= 0x0004;
+                        if (model.WarnGlobalUnderVolt) alarm |= 0x0008;
+                        if (model.WarnHighTemp) alarm |= (0x0010 | 0x0040);
+                        if (model.WarnLowTemp) alarm |= (0x0020 | 0x0080);
+                        if (model.WarnOverCurrent)
+                        {
+                            if (model.Current >= 0) alarm |= 0x0100;
+                            if (model.Current <= 0) alarm |= 0x0200;
+                        }
+                        if (model.WarnVoltDiff) alarm |= 0x0400;
+                        if (model.WarnLowCapacity) alarm |= 0x0800;
+                        data[28] = (byte)(alarm >> 8);
+                        data[29] = (byte)(alarm & 0xFF);
+
+                        // Bytes 30..31: 满充容量 (10mAh)
+                        data[30] = data[6];
+                        data[31] = data[7];
+
+                        // Bytes 32..33: 剩余容量 (10mAh)
+                        data[32] = data[4];
+                        data[33] = data[5];
+
+                        // Bytes 34..35: 均衡电流 (mA)
+                        ushort balCurr = model.StatusBalancing ? (ushort)200 : (ushort)0;
+                        data[34] = (byte)(balCurr >> 8);
+                        data[35] = (byte)(balCurr & 0xFF);
+
+                        txResponse = JbdChecksum.BuildResponse(0x03, 0x00, data, callbackId);
+                        decodedInfo = string.Format("[JBD V12] 响应 0x03 基本信息: 电压={0:F2}V, 电流={1:F2}A, SOC={2:F0}%, 保护=0x{3:X4}, 告警=0x{4:X4}",
+                            model.Voltage, model.Current, model.SOC, prot, alarm);
+                        return true;
+                    }
+                    else if (cmd == 0x04)
+                    {
+                        // 0x04: 读电芯单体电压 (mV)
+                        int cellCount = (model.Voltage < 35.0) ? 8 : 16;
+                        byte[] data = new byte[cellCount * 2];
+                        ushort maxCellMv, minCellMv;
+                        for (int i = 0; i < cellCount; i++)
+                        {
+                            ushort cellMv = model.GetCellMillivolts(i, cellCount, out maxCellMv, out minCellMv);
+                            data[i * 2] = (byte)(cellMv >> 8);
+                            data[i * 2 + 1] = (byte)(cellMv & 0xFF);
+                        }
+                        txResponse = JbdChecksum.BuildResponse(0x04, 0x00, data, callbackId);
+                        decodedInfo = string.Format("[JBD V12] 响应 0x04 单体电压: 共 {0} 串电芯", cellCount);
+                        return true;
+                    }
+                    else if (cmd == 0x05)
+                    {
+                        // 0x05: 读硬件版本/型号 ASCII
+                        byte[] data = Encoding.ASCII.GetBytes("JBD-UP16S012-V12");
+                        txResponse = JbdChecksum.BuildResponse(0x05, 0x00, data, callbackId);
+                        decodedInfo = "[JBD V12] 响应 0x05 硬件型号: JBD-UP16S012-V12";
+                        return true;
+                    }
+                    else if (cmd == 0xAA)
+                    {
+                        // 0xAA: 读保护历史统计
+                        byte[] data = new byte[24];
+                        ushort[] hist = new ushort[12];
+                        hist[0] = model.ProtShortCircuit ? (ushort)1 : (ushort)0;
+                        hist[1] = (model.ProtOverCurrent && model.Current >= 0) ? (ushort)1 : (ushort)0;
+                        hist[2] = (model.ProtOverCurrent && model.Current <= 0) ? (ushort)1 : (ushort)0;
+                        hist[3] = model.ProtOverVolt ? (ushort)1 : (ushort)0;
+                        hist[4] = model.ProtUnderVolt ? (ushort)1 : (ushort)0;
+                        hist[5] = model.ProtHighTemp ? (ushort)1 : (ushort)0;
+                        hist[6] = model.ProtUnderTemp ? (ushort)1 : (ushort)0;
+                        hist[7] = model.ProtHighTemp ? (ushort)1 : (ushort)0;
+                        hist[8] = model.ProtUnderTemp ? (ushort)1 : (ushort)0;
+                        hist[9] = model.ProtOverVolt ? (ushort)1 : (ushort)0;
+                        hist[10] = model.ProtUnderVolt ? (ushort)1 : (ushort)0;
+                        hist[11] = 1; // 系统重启次数
+                        for (int i = 0; i < 12; i++)
+                        {
+                            data[i * 2] = (byte)(hist[i] >> 8);
+                            data[i * 2 + 1] = (byte)(hist[i] & 0xFF);
+                        }
+                        txResponse = JbdChecksum.BuildResponse(0xAA, 0x00, data, callbackId);
+                        decodedInfo = "[JBD V12] 响应 0xAA 保护历史统计";
+                        return true;
+                    }
+                    else if (cmd == 0xF6)
+                    {
+                        // 0xF6: 读电芯内阻 (15串, 0.1mΩ, 0x0005 = 0.5mΩ)
+                        byte[] data = new byte[30];
+                        for (int i = 0; i < 15; i++)
+                        {
+                            data[i * 2] = 0x00;
+                            data[i * 2 + 1] = 0x05;
+                        }
+                        txResponse = JbdChecksum.BuildResponse(0xF6, 0x00, data, callbackId);
+                        decodedInfo = "[JBD V12] 响应 0xF6 电池内阻 (15串 0.5mΩ)";
+                        return true;
+                    }
+                    else if (cmd == 0x00)
+                    {
+                        // 0x00: 读芯片方案 (TI 方案)
+                        txResponse = JbdChecksum.BuildResponse(0x00, 0x00, new byte[] { 0x00, 0x00 }, callbackId);
+                        decodedInfo = "[JBD V12] 响应 0x00 芯片方案: TI 方案 (0x0000)";
+                        return true;
+                    }
+                    else if (cmd == 0xFA)
+                    {
+                        // 0xFA: 读配置参数
+                        if (reqDataLen < 3)
+                        {
+                            txResponse = JbdChecksum.BuildResponse(0xFA, 0x81, new byte[0], callbackId);
+                            decodedInfo = "[JBD V12] 读参数错误 (0x81): 载荷长度不足";
+                            return true;
+                        }
+
+                        byte paramAddrHi = rxBuffer[4];
+                        byte paramAddrLo = rxBuffer[5];
+                        byte regCount = rxBuffer[6];
+                        ushort paramAddr = (ushort)((paramAddrHi << 8) | paramAddrLo);
+
+                        if (regCount == 0 || regCount > 95)
+                        {
+                            txResponse = JbdChecksum.BuildResponse(0xFA, 0x81, new byte[0], callbackId);
+                            decodedInfo = "[JBD V12] 读参数错误 (0x81): 寄存器数量超出范围";
+                            return true;
+                        }
+
+                        if (paramAddr == 0x0038 && regCount == 0x10)
+                        {
+                            byte[] data = new byte[3 + 32];
+                            data[0] = paramAddrHi;
+                            data[1] = paramAddrLo;
+                            data[2] = regCount;
+                            data[3] = 0x05;
+                            byte[] nameBytes = Encoding.ASCII.GetBytes("DGJBD");
+                            Array.Copy(nameBytes, 0, data, 4, nameBytes.Length);
+                            txResponse = JbdChecksum.BuildResponse(0xFA, 0x00, data, callbackId);
+                            decodedInfo = "[JBD V12] 响应 0xFA 读厂商信息 (0x0038): DGJBD";
+                            return true;
+                        }
+                        if (paramAddr == 0x0048 && regCount == 0x10)
+                        {
+                            byte[] data = new byte[3 + 32];
+                            data[0] = paramAddrHi;
+                            data[1] = paramAddrLo;
+                            data[2] = regCount;
+                            data[3] = 16;
+                            byte[] codeBytes = Encoding.ASCII.GetBytes("JBD-BMS-V12-PROT");
+                            Array.Copy(codeBytes, 0, data, 4, codeBytes.Length);
+                            txResponse = JbdChecksum.BuildResponse(0xFA, 0x00, data, callbackId);
+                            decodedInfo = "[JBD V12] 响应 0xFA 读BMS编码 (0x0048)";
+                            return true;
+                        }
+                        if (paramAddr == 0x0058 && regCount == 0x10)
+                        {
+                            byte[] data = new byte[3 + 32];
+                            data[0] = paramAddrHi;
+                            data[1] = paramAddrLo;
+                            data[2] = regCount;
+                            data[3] = 15;
+                            byte[] barBytes = Encoding.ASCII.GetBytes("SN2026110500123");
+                            Array.Copy(barBytes, 0, data, 4, barBytes.Length);
+                            txResponse = JbdChecksum.BuildResponse(0xFA, 0x00, data, callbackId);
+                            decodedInfo = "[JBD V12] 响应 0xFA 读条码 (0x0058)";
+                            return true;
+                        }
+
+                        byte[] respData = new byte[3 + regCount * 2];
+                        respData[0] = paramAddrHi;
+                        respData[1] = paramAddrLo;
+                        respData[2] = regCount;
+                        for (int k = 0; k < regCount; k++)
+                        {
+                            ushort pIdx = (ushort)(paramAddr + k);
+                            ushort val = 0;
+                            switch (pIdx)
+                            {
+                                case 0: val = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.FullCapacity * 100.0))); break;
+                                case 1: val = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.RemainingCapacity * 100.0))); break;
+                                case 2: val = (ushort)Math.Max(0, Math.Min(65535, Math.Round((model.Voltage < 35.0 ? model.CVVoltage / 8.0 : model.CVVoltage / 16.0) * 1000.0))); break;
+                                case 3: val = (ushort)Math.Max(0, Math.Min(65535, Math.Round((model.Voltage < 35.0 ? model.CutoffVoltage / 8.0 : model.CutoffVoltage / 16.0) * 1000.0))); break;
+                                case 7: val = (ushort)Math.Max(0, Math.Min(65535, model.CycleCount)); break;
+                                case 16: val = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.CVVoltage * 100.0))); break;
+                                case 18: val = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.CutoffVoltage * 100.0))); break;
+                                case 24: val = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.MaxChargeCurrent * 100.0))); break;
+                                case 25:
+                                    int disRaw = (int)Math.Round(model.MaxDischargeCurrent * 100.0);
+                                    val = (ushort)(0x10000 - (disRaw & 0xFFFF));
+                                    break;
+                                case 31: val = (model.Voltage < 35.0) ? (ushort)8 : (ushort)16; break;
+                                case 114: val = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.Voltage * 10.0))); break;
+                                case 117: val = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.CVVoltage * 10.0))); break;
+                                case 118: val = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.MaxDischargeCurrent))); break;
+                                case 119: val = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.MaxChargeCurrent))); break;
+                                default: val = 0; break;
+                            }
+                            respData[3 + k * 2] = (byte)(val >> 8);
+                            respData[3 + k * 2 + 1] = (byte)(val & 0xFF);
+                        }
+                        txResponse = JbdChecksum.BuildResponse(0xFA, 0x00, respData, callbackId);
+                        decodedInfo = string.Format("[JBD V12] 响应 0xFA 读参数: 起始=0x{0:X4}, 数量={1}", paramAddr, regCount);
+                        return true;
+                    }
+                    else
+                    {
+                        txResponse = JbdChecksum.BuildResponse(cmd, 0x80, new byte[0], callbackId);
+                        decodedInfo = string.Format("[JBD V12] 错误 (0x80): 读功能码 0x{0:X2} 不存在", cmd);
+                        return true;
+                    }
+                }
+                // ── 2. 写寄存器指令 (RW == 0x5A) ──
+                else if (rw == 0x5A)
+                {
+                    if (cmd == 0xFB)
+                    {
+                        // 0xFB: 控制 MOS 开关
+                        if (reqDataLen >= 2)
+                        {
+                            byte yy = rxBuffer[4];
+                            byte xx = rxBuffer[5];
+                            if (yy == 0x0A)
+                            {
+                                bool en = (xx == 0x00);
+                                model.StatusChargeEnable = en;
+                                model.StatusDischargeEnable = en;
+                                _softLockChgMos = !en;
+                                _softLockDisMos = !en;
+                            }
+                            else if (yy == 0x01)
+                            {
+                                bool en = (xx == 0x00);
+                                model.StatusChargeEnable = en;
+                                _softLockChgMos = !en;
+                            }
+                            else if (yy == 0x00)
+                            {
+                                bool chgEn = (xx & 0x01) == 0;
+                                bool disEn = (xx & 0x02) == 0;
+                                model.StatusChargeEnable = chgEn;
+                                model.StatusDischargeEnable = disEn;
+                                _softLockChgMos = !chgEn;
+                                _softLockDisMos = !disEn;
+                            }
+                        }
+                        txResponse = JbdChecksum.BuildResponse(0xFB, 0x00, new byte[0], callbackId);
+                        decodedInfo = string.Format("[JBD V12] 响应 0xFB 控制MOS: 充MOS={0}, 放MOS={1}",
+                            model.StatusChargeEnable ? "开" : "关", model.StatusDischargeEnable ? "开" : "关");
+                        return true;
+                    }
+                    else if (cmd == 0x00)
+                    {
+                        // 0x00: 进入工厂模式 (密码 0x5678)
+                        if (reqDataLen >= 2 && rxBuffer[4] == 0x56 && rxBuffer[5] == 0x78)
+                        {
+                            _inFactoryMode = true;
+                            txResponse = JbdChecksum.BuildResponse(0x00, 0x00, new byte[0], callbackId);
+                            decodedInfo = "[JBD V12] 响应 0x00 进入工厂模式成功 (密码 0x5678)";
+                        }
+                        else
+                        {
+                            txResponse = JbdChecksum.BuildResponse(0x00, 0x81, new byte[0], callbackId);
+                            decodedInfo = "[JBD V12] 响应 0x00 进入工厂模式失败 (密码错误)";
+                        }
+                        return true;
+                    }
+                    else if (cmd == 0x01)
+                    {
+                        // 0x01: 退出工厂模式
+                        _inFactoryMode = false;
+                        txResponse = JbdChecksum.BuildResponse(0x01, 0x00, new byte[0], callbackId);
+                        decodedInfo = "[JBD V12] 响应 0x01 退出工厂模式成功";
+                        return true;
+                    }
+                    else if (cmd == 0xFA)
+                    {
+                        // 0xFA: 写配置参数
+                        if (reqDataLen >= 3)
+                        {
+                            byte addrHi = rxBuffer[4];
+                            byte addrLo = rxBuffer[5];
+                            byte countN = rxBuffer[6];
+                            ushort addr = (ushort)((addrHi << 8) | addrLo);
+                            if (reqDataLen >= 3 + countN * 2)
+                            {
+                                for (int k = 0; k < countN; k++)
+                                {
+                                    ushort regIdx = (ushort)(addr + k);
+                                    ushort regVal = (ushort)((rxBuffer[7 + k * 2] << 8) | rxBuffer[7 + k * 2 + 1]);
+                                    switch (regIdx)
+                                    {
+                                        case 0: model.FullCapacity = regVal / 100.0; break;
+                                        case 1: model.RemainingCapacity = regVal / 100.0; break;
+                                        case 7: model.CycleCount = regVal; break;
+                                        case 16: model.CVVoltage = regVal / 100.0; break;
+                                        case 18: model.CutoffVoltage = regVal / 100.0; break;
+                                        case 24: model.MaxChargeCurrent = regVal / 100.0; break;
+                                        case 25:
+                                            short sVal = (short)regVal;
+                                            model.MaxDischargeCurrent = Math.Abs(sVal) / 100.0;
+                                            break;
+                                        case 117: model.CVVoltage = regVal / 10.0; break;
+                                        case 118: model.MaxDischargeCurrent = regVal; break;
+                                        case 119: model.MaxChargeCurrent = regVal; break;
+                                    }
+                                }
+                            }
+                            txResponse = JbdChecksum.BuildResponse(0xFA, 0x00, new byte[] { addrHi, addrLo, countN }, callbackId);
+                            decodedInfo = string.Format("[JBD V12] 响应 0xFA 写参数成功: 起始=0x{0:X4}, 数量={1}", addr, countN);
+                            return true;
+                        }
+                        txResponse = JbdChecksum.BuildResponse(0xFA, 0x81, new byte[0], callbackId);
+                        decodedInfo = "[JBD V12] 写参数错误 (0x81)";
+                        return true;
+                    }
+                    else if (cmd == 0x0A)
+                    {
+                        // 0x0A: 控制指令
+                        byte subCmd = reqDataLen >= 1 ? rxBuffer[4] : (byte)0;
+                        if (subCmd == 0x01)
+                        {
+                            model.RemainingCapacity = model.FullCapacity * (model.SOC / 100.0);
+                        }
+                        else if (subCmd == 0x04)
+                        {
+                            model.ClearAllAlarmsAndProtections();
+                        }
+                        else if (subCmd == 0x05 || subCmd == 0x06 || subCmd == 0x08)
+                        {
+                            model.StatusSleep = true;
+                            model.StatusChargeEnable = false;
+                            model.StatusDischargeEnable = false;
+                        }
+                        else if (subCmd == 0x07)
+                        {
+                            model.StatusBalancing = true;
+                        }
+                        else if (subCmd == 0x0C)
+                        {
+                            _heatingEnabled = true;
+                        }
+                        txResponse = JbdChecksum.BuildResponse(0x0A, 0x00, new byte[0], callbackId);
+                        decodedInfo = string.Format("[JBD V12] 响应 0x0A 控制指令: 子命令=0x{0:X2}", subCmd);
+                        return true;
+                    }
+                    else if (cmd == 0x0B || cmd == 0x06 || cmd == 0x07 || cmd == 0x08)
+                    {
+                        txResponse = JbdChecksum.BuildResponse(cmd, 0x00, new byte[0], callbackId);
+                        decodedInfo = string.Format("[JBD V12] 响应 0x{0:X2} 密码/配置指令", cmd);
+                        return true;
+                    }
+                    else if (cmd == 0xF6)
+                    {
+                        txResponse = JbdChecksum.BuildResponse(0xF6, 0x00, new byte[0], callbackId);
+                        decodedInfo = "[JBD V12] 响应 0xF6 写入内阻成功";
+                        return true;
+                    }
+                    else if (cmd == 0xFC)
+                    {
+                        // 0xFC: 控制加热
+                        byte act = reqDataLen >= 1 ? rxBuffer[4] : (byte)0;
+                        if (act == 0x01) _heatingEnabled = true;
+                        else if (act == 0x02) _heatingEnabled = false;
+                        txResponse = JbdChecksum.BuildResponse(0xFC, 0x00, new byte[0], callbackId);
+                        decodedInfo = string.Format("[JBD V12] 响应 0xFC 控制加热: {0}", _heatingEnabled ? "开启" : "关闭");
+                        return true;
+                    }
+                    else
+                    {
+                        txResponse = JbdChecksum.BuildResponse(cmd, 0x80, new byte[0], callbackId);
+                        decodedInfo = string.Format("[JBD V12] 错误 (0x80): 写功能码 0x{0:X2} 不存在", cmd);
+                        return true;
+                    }
+                }
+                else
+                {
+                    txResponse = JbdChecksum.BuildResponse(cmd, 0x80, new byte[0], callbackId);
+                    decodedInfo = string.Format("[JBD V12] 错误 (0x80): 读写标志 0x{0:X2} 非法", rw);
+                    return true;
+                }
+            }
+        }
+
+        public byte[] BuildMasterPollFrame(byte targetId, int pollPhase)
+        {
+            if (pollPhase == 1)
+            {
+                // Phase 1: 0x04 读单体电压
+                return JbdChecksum.BuildRequest(0xA5, 0x04, new byte[0]);
+            }
+            // Phase 0: 0x03 读基本信息与状态
+            return JbdChecksum.BuildRequest(0xA5, 0x03, new byte[0]);
+        }
+
+        public bool TryDecodeMasterResponse(byte[] rxBuffer, int rxLength, BmsDataModel model, out string decodedInfo)
+        {
+            decodedInfo = "";
+            int coreLen;
+            if (!JbdChecksum.VerifyResponse(rxBuffer, 0, rxLength, out coreLen))
+                return false;
+
+            byte cmd = rxBuffer[1];
+            byte status = rxBuffer[2];
+            byte dataLen = rxBuffer[3];
+
+            if (status != 0x00)
+            {
+                string errDesc = status == 0x80 ? "命令不存在" :
+                                 (status == 0x81 ? "非法操作/未进工厂模式" :
+                                 (status == 0x82 ? "校验错误" :
+                                 (status == 0x83 ? "密码错误" :
+                                 (status == 0x84 ? "数据越界" : ("未知错误 0x" + status.ToString("X2"))))));
+                decodedInfo = string.Format("[JBD V12] 从机异常响应 CMD=0x{0:X2}, 状态码=0x{1:X2} ({2})", cmd, status, errDesc);
+                return true;
+            }
+
+            lock (model.SyncRoot)
+            {
+                if (cmd == 0x03 && dataLen >= 23)
+                {
+                    // Bytes 4..5: 总电压 (10mV)
+                    ushort uVolt = (ushort)((rxBuffer[4] << 8) | rxBuffer[5]);
+                    model.Voltage = uVolt / 100.0;
+
+                    // Bytes 6..7: 电流 (10mA 有符号)
+                    short sCurr = (short)((rxBuffer[6] << 8) | rxBuffer[7]);
+
+                    // Bytes 8..9: 剩余容量 (10mAh)
+                    ushort uRemCap = (ushort)((rxBuffer[8] << 8) | rxBuffer[9]);
+
+                    // Bytes 10..11: 满充容量 (10mAh)
+                    ushort uFullCap = (ushort)((rxBuffer[10] << 8) | rxBuffer[11]);
+
+                    // Bytes 12..13: 循环次数
+                    ushort uCycles = (ushort)((rxBuffer[12] << 8) | rxBuffer[13]);
+                    model.CycleCount = uCycles;
+
+                    // Bytes 16..19: 均衡状态 (低16串 + 高16串)
+                    ushort eqLow = (ushort)((rxBuffer[16] << 8) | rxBuffer[17]);
+                    ushort eqHigh = (ushort)((rxBuffer[18] << 8) | rxBuffer[19]);
+                    model.StatusBalancing = (eqLow != 0 || eqHigh != 0);
+
+                    // Bytes 20..21: 保护状态字
+                    ushort prot = (ushort)((rxBuffer[20] << 8) | rxBuffer[21]);
+                    model.ProtOverVolt = (prot & 0x0005) != 0;
+                    model.ProtUnderVolt = (prot & 0x000A) != 0;
+                    model.ProtHighTemp = (prot & 0x0050) != 0;
+                    model.ProtUnderTemp = (prot & 0x00A0) != 0;
+                    model.ProtOverCurrent = (prot & 0x0300) != 0;
+                    model.ProtShortCircuit = (prot & 0x0400) != 0;
+                    model.ProtSystemFault = (prot & 0x0800) != 0;
+                    model.ProtSoftStart = (prot & 0x1000) != 0;
+
+                    // Byte 23: SOC (0..100%)
+                    model.SOC = rxBuffer[23];
+
+                    // Byte 24: FET 状态
+                    byte fet = rxBuffer[24];
+                    model.StatusChargeEnable = (fet & 0x01) != 0;
+                    model.StatusDischargeEnable = (fet & 0x02) != 0;
+                    double iScale = (fet & 0x80) != 0 ? 10.0 : 100.0;
+                    model.Current = sCurr / iScale;
+                    model.RemainingCapacity = uRemCap / iScale;
+                    model.FullCapacity = uFullCap / iScale;
+
+                    // NTC 探头温度解析
+                    byte ntcCount = rxBuffer[26];
+                    if (dataLen >= 23 + ntcCount * 2 && ntcCount > 0)
+                    {
+                        ushort tK = (ushort)((rxBuffer[27] << 8) | rxBuffer[28]);
+                        model.Temperature = (tK - 2731) / 10.0;
+                    }
+
+                    // 告警状态字解析 (在 NTC 与 1 字节湿度之后)
+                    int alarmOffset = 4 + 23 + ntcCount * 2 + 1;
+                    if (alarmOffset + 1 < 4 + dataLen)
+                    {
+                        ushort alarm = (ushort)((rxBuffer[alarmOffset] << 8) | rxBuffer[alarmOffset + 1]);
+                        model.WarnSingleOverVolt = (alarm & 0x0001) != 0;
+                        model.WarnSingleUnderVolt = (alarm & 0x0002) != 0;
+                        model.WarnGlobalOverVolt = (alarm & 0x0004) != 0;
+                        model.WarnGlobalUnderVolt = (alarm & 0x0008) != 0;
+                        model.WarnHighTemp = (alarm & 0x0050) != 0;
+                        model.WarnLowTemp = (alarm & 0x00A0) != 0;
+                        model.WarnOverCurrent = (alarm & 0x0300) != 0;
+                        model.WarnVoltDiff = (alarm & 0x0400) != 0;
+                        model.WarnLowCapacity = (alarm & 0x0800) != 0;
+                    }
+
+                    decodedInfo = string.Format("[JBD V12] 成功解析 0x03 基本信息: 电压={0:F2}V, 电流={1:F2}A, SOC={2:F0}%, 温度={3:F1}°C, 满充容量={4:F2}Ah",
+                        model.Voltage, model.Current, model.SOC, model.Temperature, model.FullCapacity);
+                    return true;
+                }
+                else if (cmd == 0x04)
+                {
+                    int cellCount = dataLen / 2;
+                    decodedInfo = string.Format("[JBD V12] 成功解析 0x04 单体电压: 共 {0} 串电芯", cellCount);
+                    return true;
+                }
+                else if (cmd == 0x05)
+                {
+                    string modelName = Encoding.ASCII.GetString(rxBuffer, 4, dataLen).TrimEnd('\0', ' ');
+                    decodedInfo = string.Format("[JBD V12] 成功解析 0x05 硬件型号: {0}", modelName);
+                    return true;
+                }
+                else if (cmd == 0xAA)
+                {
+                    decodedInfo = string.Format("[JBD V12] 成功解析 0xAA 保护历史统计 (数据长度={0} Bytes)", dataLen);
+                    return true;
+                }
+                else if (cmd == 0xFA)
+                {
+                    decodedInfo = string.Format("[JBD V12] 成功解析 0xFA 参数读写响应 (数据长度={0} Bytes)", dataLen);
+                    return true;
+                }
+                else if (cmd == 0xFB || cmd == 0x0A || cmd == 0xFC || cmd == 0x00 || cmd == 0x01 || cmd == 0xF6)
+                {
+                    decodedInfo = string.Format("[JBD V12] 成功执行指令 0x{0:X2} 响应", cmd);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
+
     #region Inverter & Protocol Classifier (3KU / 6KU 机型与协议智能识别引擎)
 
     public enum InverterModel
@@ -2503,7 +3126,8 @@ namespace BMS_Protocol_Simulator
         Voltronic,
         Pylontech,
         Cvte,
-        LibModbus
+        LibModbus,
+        Jbd
     }
 
     public class DetectionResult
@@ -2528,29 +3152,36 @@ namespace BMS_Protocol_Simulator
 
     public class InverterDetector
     {
-        private DetectedProtocolType _latchedProtocol = DetectedProtocolType.Unknown;
         private InverterModel _latchedModel = InverterModel.Unknown;
-        private byte _latchedSlaveId = 0;
-        private DateTime _lastDetectedTime = DateTime.MinValue;
         private DateTime _lastPylon60Time = DateTime.MinValue;
-
-        public DetectedProtocolType LatchedProtocol { get { return _latchedProtocol; } }
-        public InverterModel LatchedModel { get { return _latchedModel; } }
-        public byte LatchedSlaveId { get { return _latchedSlaveId; } }
-        public DateTime LastDetectedTime { get { return _lastDetectedTime; } }
 
         public void Reset()
         {
-            _latchedProtocol = DetectedProtocolType.Unknown;
             _latchedModel = InverterModel.Unknown;
-            _latchedSlaveId = 0;
-            _lastDetectedTime = DateTime.MinValue;
             _lastPylon60Time = DateTime.MinValue;
         }
 
         public DetectionResult InspectFrame(byte[] buffer, int offset, int length)
         {
             if (buffer == null || length < 4) return null;
+
+            // 0. JBD V12 特征帧校验 (0xDD 起始，0xA5/0x5A 读写，0x77 结束)
+            int jbdCoreLen, jbdCbLen;
+            if (buffer[offset] == 0xDD && JbdChecksum.VerifyRequest(buffer, offset, length, out jbdCoreLen, out jbdCbLen))
+            {
+                byte rw = buffer[offset + 1];
+                byte cmd = buffer[offset + 2];
+                byte dLen = buffer[offset + 3];
+                DetectionResult res = new DetectionResult();
+                res.SlaveId = 1;
+                res.Timestamp = DateTime.Now;
+                res.RawSignature = string.Format("JBD V12: {0} CMD=0x{1:X2}, LEN={2}", rw == 0xA5 ? "读(0xA5)" : "写(0x5A)", cmd, dLen);
+                res.Protocol = DetectedProtocolType.Jbd;
+                res.Model = InverterModel.Unknown;
+                res.IsSignatureConfirmed = true;
+
+                return res;
+            }
 
             // 0. LIB_MODBUS 特征帧校验 (8 字节 0x04 读输入寄存器 或 4 字节 0x11 读产品信息)
             if (length >= 8 && buffer[offset + 1] == 0x04 && ModbusCrc.Check(buffer, 8, offset))
@@ -2569,9 +3200,6 @@ namespace BMS_Protocol_Simulator
                     res.Model = InverterModel.Unknown;
                     res.IsSignatureConfirmed = true;
 
-                    _latchedProtocol = res.Protocol;
-                    _latchedSlaveId = slaveId;
-                    _lastDetectedTime = res.Timestamp;
                     return res;
                 }
             }
@@ -2586,9 +3214,6 @@ namespace BMS_Protocol_Simulator
                 res.Model = InverterModel.Unknown;
                 res.IsSignatureConfirmed = true;
 
-                _latchedProtocol = res.Protocol;
-                _latchedSlaveId = slaveId;
-                _lastDetectedTime = res.Timestamp;
                 return res;
             }
 
@@ -2689,10 +3314,7 @@ namespace BMS_Protocol_Simulator
 
                 if (res.Protocol != DetectedProtocolType.Unknown)
                 {
-                    _latchedProtocol = res.Protocol;
                     if (res.Model != InverterModel.Unknown) _latchedModel = res.Model;
-                    _latchedSlaveId = slaveId;
-                    _lastDetectedTime = res.Timestamp;
                 }
 
                 return res;
@@ -2754,10 +3376,7 @@ namespace BMS_Protocol_Simulator
                             }
                         }
 
-                        _latchedProtocol = res.Protocol;
                         if (res.Model != InverterModel.Unknown) _latchedModel = res.Model;
-                        _latchedSlaveId = slaveId;
-                        _lastDetectedTime = res.Timestamp;
                         return res;
                     }
                 }
@@ -2880,7 +3499,166 @@ namespace BMS_Protocol_Simulator
                 return sb.ToString();
             }
 
-            // 2. Modbus RTU / Voltronic 帧解剖
+            // 2. JBD (RS485/UART V12) 帧解剖 (0xDD 开头)
+            if (raw[0] == 0xDD)
+            {
+                int coreLen, cbLen;
+                bool isReq = JbdChecksum.VerifyRequest(raw, 0, raw.Length, out coreLen, out cbLen);
+                bool isResp = JbdChecksum.VerifyResponse(raw, 0, raw.Length, out coreLen);
+                bool isHostReqType = (raw.Length >= 2 && (raw[1] == 0xA5 || raw[1] == 0x5A));
+
+                sb.AppendLine("[协议帧类型] : JBD (RS485/UART V12) 二进制协议帧");
+
+                if (isHostReqType)
+                {
+                    byte rw = raw[1];
+                    byte cmd = raw.Length >= 3 ? raw[2] : (byte)0;
+                    byte dLen = raw.Length >= 4 ? raw[3] : (byte)0;
+                    ushort frameChk = (raw.Length >= 4 + dLen + 2) ? (ushort)((raw[4 + dLen] << 8) | raw[4 + dLen + 1]) : (ushort)0;
+                    ushort calcChk = (raw.Length >= 4 + dLen) ? JbdChecksum.Calculate(raw, 2, 2 + dLen) : (ushort)0;
+                    bool chkOk = isReq || (frameChk == calcChk && raw.Length >= 7 + dLen && raw[4 + dLen + 2] == 0x77);
+
+                    sb.AppendLine(string.Format("[报文属性]   : 主机下发{0}指令帧 (RW=0x{1:X2})", rw == 0xA5 ? "读取" : "写入/控制", rw));
+                    sb.AppendLine(string.Format("[校验码状态] : {0} (报文值: 0x{1:X4}, 计算值: 0x{2:X4})",
+                        chkOk ? "✓ 校验通过 (PASS)" : "✕ 校验错误 (FAIL)", frameChk, calcChk));
+                    sb.AppendLine();
+
+                    sb.AppendLine("┌──────────┬──────────┬────────────────────────────────────────┐");
+                    sb.AppendLine("│ 字段名称 │ 报文内容 │ 物理意义与规范解析                     │");
+                    sb.AppendLine("├──────────┼──────────┼────────────────────────────────────────┤");
+                    sb.AppendLine("│ SOI      │ 0xDD     │ 起始标志位 (Start of Frame)            │");
+                    sb.AppendLine(string.Format("│ R/W 标志 │ 0x{0:X2}     │ {1,-38} │", rw, rw == 0xA5 ? "0xA5 (读数据/状态)" : (rw == 0x5A ? "0x5A (写控制/参数)" : "未知读写标志")));
+                    sb.AppendLine(string.Format("│ 命令码CMD│ 0x{0:X2}     │ {1,-38} │", cmd, GetJbdCmdDescription(cmd, rw)));
+                    sb.AppendLine(string.Format("│ 数据长度 │ 0x{0:X2} ({0}) │ 请求载荷长度 ({0} 字节)                 │", dLen));
+                    sb.AppendLine(string.Format("│ 校验和   │ 0x{0:X4}   │ CMD+LEN+DATA 累加和按位取反加1         │", frameChk));
+                    sb.AppendLine("│ EOI      │ 0x77     │ 结束标志位 (End of Frame)              │");
+                    int actualCbLen = Math.Max(0, raw.Length - (7 + dLen));
+                    if (actualCbLen > 0)
+                    {
+                        byte[] cbBytes = new byte[actualCbLen];
+                        Array.Copy(raw, 7 + dLen, cbBytes, 0, actualCbLen);
+                        sb.AppendLine(string.Format("│ CALLBACK │ {0,-8} │ 尾随透传 ID ({1} 字节, 从机将原样附带回传)│", BitConverter.ToString(cbBytes).Replace("-", " "), actualCbLen));
+                    }
+                    sb.AppendLine("└──────────┴──────────┴────────────────────────────────────────┘");
+
+                    if (dLen > 0 && raw.Length >= 4 + dLen)
+                    {
+                        sb.AppendLine();
+                        sb.AppendLine(string.Format("[载荷数据 HEX]: {0}", BitConverter.ToString(raw, 4, dLen).Replace("-", " ")));
+                    }
+                    return sb.ToString();
+                }
+                else
+                {
+                    byte cmd = raw.Length >= 2 ? raw[1] : (byte)0;
+                    byte status = raw.Length >= 3 ? raw[2] : (byte)0;
+                    byte dLen = raw.Length >= 4 ? raw[3] : (byte)0;
+                    ushort frameChk = (raw.Length >= 4 + dLen + 2) ? (ushort)((raw[4 + dLen] << 8) | raw[4 + dLen + 1]) : (ushort)0;
+                    ushort calcChk = (raw.Length >= 4 + dLen) ? JbdChecksum.Calculate(raw, 2, 2 + dLen) : (ushort)0;
+                    bool chkOk = isResp || (frameChk == calcChk && raw.Length >= 7 + dLen && raw[4 + dLen + 2] == 0x77);
+
+                    string statusDesc = status == 0x00 ? "0x00 (执行成功 / OK)" :
+                                        (status == 0x80 ? "0x80 (错误: 命令码不存在)" :
+                                        (status == 0x81 ? "0x81 (错误: 非法操作/未进工厂模式)" :
+                                        (status == 0x82 ? "0x82 (错误: 校验码错误)" :
+                                        (status == 0x83 ? "0x83 (错误: 密码错误)" :
+                                        (status == 0x84 ? "0x84 (错误: 数据越界)" : ("0x" + status.ToString("X2") + " (未知状态码)"))))));
+
+                    sb.AppendLine("[报文属性]   : BMS 从机响应帧 (Slave Response)");
+                    sb.AppendLine(string.Format("[校验码状态] : {0} (报文值: 0x{1:X4}, 计算值: 0x{2:X4})",
+                        chkOk ? "✓ 校验通过 (PASS)" : "✕ 校验错误 (FAIL)", frameChk, calcChk));
+                    sb.AppendLine();
+
+                    sb.AppendLine("┌──────────┬──────────┬────────────────────────────────────────┐");
+                    sb.AppendLine("│ 字段名称 │ 报文内容 │ 物理意义与规范解析                     │");
+                    sb.AppendLine("├──────────┼──────────┼────────────────────────────────────────┤");
+                    sb.AppendLine("│ SOI      │ 0xDD     │ 起始标志位 (Start of Frame)            │");
+                    sb.AppendLine(string.Format("│ 命令码CMD│ 0x{0:X2}     │ {1,-38} │", cmd, GetJbdCmdDescription(cmd, 0xA5)));
+                    sb.AppendLine(string.Format("│ 状态码   │ 0x{0:X2}     │ {1,-38} │", status, statusDesc));
+                    sb.AppendLine(string.Format("│ 数据长度 │ 0x{0:X2} ({0}) │ 应答数据载荷长度 ({0} 字节)            │", dLen));
+                    sb.AppendLine(string.Format("│ 校验和   │ 0x{0:X4}   │ STATUS+LEN+DATA 累加和按位取反加1      │", frameChk));
+                    sb.AppendLine("│ EOI      │ 0x77     │ 结束标志位 (End of Frame)              │");
+                    int actualCbLen = Math.Max(0, raw.Length - (7 + dLen));
+                    if (actualCbLen > 0)
+                    {
+                        byte[] cbBytes = new byte[actualCbLen];
+                        Array.Copy(raw, 7 + dLen, cbBytes, 0, actualCbLen);
+                        sb.AppendLine(string.Format("│ CALLBACK │ {0,-8} │ 尾随回显 ID ({1} 字节, 原样回传给上位机) │", BitConverter.ToString(cbBytes).Replace("-", " "), actualCbLen));
+                    }
+                    sb.AppendLine("└──────────┴──────────┴────────────────────────────────────────┘");
+
+                    if (dLen > 0 && raw.Length >= 4 + dLen)
+                    {
+                        if (cmd == 0x03 && dLen >= 23)
+                        {
+                            ushort uVolt = (ushort)((raw[4] << 8) | raw[5]);
+                            short sCurr = (short)((raw[6] << 8) | raw[7]);
+                            ushort uRemCap = (ushort)((raw[8] << 8) | raw[9]);
+                            ushort uFullCap = (ushort)((raw[10] << 8) | raw[11]);
+                            ushort uCycles = (ushort)((raw[12] << 8) | raw[13]);
+                            ushort prot = (ushort)((raw[20] << 8) | raw[21]);
+                            byte rsoc = raw[23];
+                            byte fet = raw[24];
+                            byte strings = raw[25];
+                            byte ntcCount = raw[26];
+
+                            sb.AppendLine();
+                            sb.AppendLine("┌────────────────────┬────────────────────────────────────────┐");
+                            sb.AppendLine("│ 0x03 状态遥测属性  │ 解析数值与物理量                       │");
+                            sb.AppendLine("├────────────────────┼────────────────────────────────────────┤");
+                            sb.AppendLine(string.Format("│ 电池组总电压       │ {0:F2} V (原始值: {1} × 10mV)           │", uVolt / 100.0, uVolt));
+                            double iScale = (fet & 0x80) != 0 ? 10.0 : 100.0;
+                            sb.AppendLine(string.Format("│ 充放电实时电流     │ {0:F2} A ({1}, {2:F2}A)            │", sCurr / iScale, sCurr >= 0 ? "充电" : "放电", Math.Abs(sCurr / iScale)));
+                            sb.AppendLine(string.Format("│ 剩余容量 / 满充容量│ {0:F2} Ah / {1:F2} Ah                    │", uRemCap / iScale, uFullCap / iScale));
+                            sb.AppendLine(string.Format("│ 荷电状态 (SOC)     │ {0}%                                   │", rsoc));
+                            sb.AppendLine(string.Format("│ 循环次数 (Cycles)  │ {0} 次                                 │", uCycles));
+                            sb.AppendLine(string.Format("│ MOS 开关状态 (FET) │ 充MOS:{0} | 放MOS:{1} (FET=0x{2:X2})         │", (fet & 0x01) != 0 ? "导通(开)" : "关断", (fet & 0x02) != 0 ? "导通(开)" : "关断", fet));
+                            sb.AppendLine(string.Format("│ 电池串数 / NTC探头 │ {0} 串 / {1} 个温度探头                  │", strings, ntcCount));
+                            if (dLen >= 23 + ntcCount * 2 && ntcCount > 0)
+                            {
+                                for (int k = 0; k < ntcCount; k++)
+                                {
+                                    int ntcIdx = 4 + 23 + k * 2;
+                                    if (ntcIdx + 1 < raw.Length)
+                                    {
+                                        ushort tk = (ushort)((raw[ntcIdx] << 8) | raw[ntcIdx + 1]);
+                                        sb.AppendLine(string.Format("│ NTC 探头 #{0} 温度    │ {1:F1} °C ({2} K)                      │", k + 1, (tk - 2731) / 10.0, tk / 10.0));
+                                    }
+                                }
+                            }
+                            sb.AppendLine(string.Format("│ 保护状态字 (Prot)  │ 0x{0:X4} (OV:{1}, UV:{2}, OC:{3}, SC:{4}) │", prot, (prot & 0x05) != 0 ? "1" : "0", (prot & 0x0A) != 0 ? "1" : "0", (prot & 0x0300) != 0 ? "1" : "0", (prot & 0x0400) != 0 ? "1" : "0"));
+                            sb.AppendLine("└────────────────────┴────────────────────────────────────────┘");
+                        }
+                        else if (cmd == 0x04)
+                        {
+                            int cellCount = dLen / 2;
+                            sb.AppendLine();
+                            sb.AppendLine("┌──────────┬──────────┬────────────┐");
+                            sb.AppendLine("│ 电芯序号 │ 原始 HEX │ 电芯电压   │");
+                            sb.AppendLine("├──────────┼──────────┼────────────┤");
+                            for (int k = 0; k < cellCount; k++)
+                            {
+                                int cIdx = 4 + k * 2;
+                                if (cIdx + 1 < raw.Length)
+                                {
+                                    ushort cMv = (ushort)((raw[cIdx] << 8) | raw[cIdx + 1]);
+                                    sb.AppendLine(string.Format("│ Cell #{0,-2} │ 0x{1:X4}   │ {2} mV    │", k + 1, cMv, cMv));
+                                }
+                            }
+                            sb.AppendLine("└──────────┴──────────┴────────────┘");
+                        }
+                        else if (cmd == 0x05)
+                        {
+                            string modelStr = Encoding.ASCII.GetString(raw, 4, dLen).TrimEnd('\0', ' ');
+                            sb.AppendLine();
+                            sb.AppendLine(string.Format("• 硬件型号 ASCII: {0}", modelStr));
+                        }
+                    }
+                    return sb.ToString();
+                }
+            }
+
+            // 3. Modbus RTU / Voltronic 帧解剖
             bool crcOk = (raw.Length >= 4) && ModbusCrc.Check(raw, raw.Length);
             ushort calcCrc = (raw.Length >= 3) ? ModbusCrc.Calculate(raw, raw.Length - 2) : (ushort)0;
             ushort frameCrc = (raw.Length >= 2) ? (ushort)((raw[raw.Length - 2] << 8) | raw[raw.Length - 1]) : (ushort)0;
@@ -2985,6 +3763,27 @@ namespace BMS_Protocol_Simulator
             }
 
             return sb.ToString();
+        }
+
+        private static string GetJbdCmdDescription(byte cmd, byte rw)
+        {
+            switch (cmd)
+            {
+                case 0x00: return rw == 0x5A ? "0x00 (进入工厂模式)" : "0x00 (读芯片方案)";
+                case 0x01: return "0x01 (退出工厂模式)";
+                case 0x03: return "0x03 (读基本信息与状态)";
+                case 0x04: return "0x04 (读电芯单体电压)";
+                case 0x05: return "0x05 (读硬件版本/型号)";
+                case 0x06: return "0x06 (进入休眠模式)";
+                case 0x0A: return "0x0A (控制指令: 关机/清告警/休眠)";
+                case 0x0B: return "0x0B (修改蓝牙密码)";
+                case 0xAA: return "0xAA (读保护历史统计)";
+                case 0xF6: return rw == 0x5A ? "0xF6 (写电芯内阻)" : "0xF6 (读电芯内阻)";
+                case 0xFA: return rw == 0x5A ? "0xFA (写配置参数)" : "0xFA (读配置参数)";
+                case 0xFB: return "0xFB (控制 MOS 充放电开关)";
+                case 0xFC: return "0xFC (控制加热模块)";
+                default: return string.Format("0x{0:X2} (自定义/扩展指令)", cmd);
+            }
         }
 
         private static string GetPylonCid2Description(string cid2)
