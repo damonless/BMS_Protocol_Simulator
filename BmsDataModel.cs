@@ -21,14 +21,6 @@ namespace BMS_Protocol_Simulator
         MasterPoller        // 模拟逆变器主动轮询电池包
     }
 
-    public enum SlaveFaultInjectionMode
-    {
-        None = 0,
-        ShengyangInvalidNonCritical = 1, // 圣阳非关键回退字段置 0xFFFF (保留总压 0x1000 与 SOC 0x1008)
-        ShengyangInvalidCritical = 2,    // 圣阳关键总压 0x1000 与 SOC 0x1008 置 0xFFFF (测试拒收保护)
-        JbdForceUnit100mA = 3            // JBD 强制启用 FET Bit7=1 (100mA / 100mAh 分支)
-    }
-
     public class BmsParameterProfile
     {
         public string ProfileName { get; set; }
@@ -223,10 +215,9 @@ namespace BMS_Protocol_Simulator
         }
 
 
-        // ── 扩展仿真参数：单芯压差拉偏 (mV)、显式串数与从机容错注入模式 ──
+        // ── 扩展仿真参数：单芯压差拉偏 (mV) 与显式串数 ──
         public int CellImbalanceMv { get; set; }       // 单体最高与最低电芯压差设定 (mV, 如 0 / 50 / 150 / 300)
         public int CellCount { get; set; }             // 显式电池串数 (8 / 15 / 16)
-        public SlaveFaultInjectionMode FaultInjection { get; set; }
 
         public int GetEffectiveCellCount()
         {
@@ -280,7 +271,6 @@ namespace BMS_Protocol_Simulator
 
         public BmsDataModel()
         {
-            FaultInjection = SlaveFaultInjectionMode.None;
             ApplyProfile("6KU");
         }
 

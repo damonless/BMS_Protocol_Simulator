@@ -102,10 +102,9 @@ namespace BMS_Protocol_Simulator
         public bool ReplyAllIds { get; set; }
         public int SpecificId { get; set; }
 
-        // ── 智能机型/协议识别与自适应 ──
+        // ── 智能协议识别与自适应 ──
         public InverterDetector Detector { get; private set; }
         public bool AutoAdaptEnabled { get; set; }
-        private InverterModel _lastAdaptedModel = InverterModel.Unknown;
 
         // ── 从机模式：通信层故障注入参数 ──
         public bool SimulateSilence { get; set; }
@@ -229,7 +228,7 @@ namespace BMS_Protocol_Simulator
                     WasScanCancelled = false;
                     WasScanAbortedByDisconnect = false;
                     IsBmsLost = false;
-                    ResetAdaptedModel();
+                    if (Detector != null) Detector.Reset();
 
                     session = new WorkerSession(sid, portName, newPort);
                     _workerThread = new Thread(WorkerLoop);
@@ -455,15 +454,6 @@ namespace BMS_Protocol_Simulator
             TxCount = 0;
             ErrorCount = 0;
             IsBmsLost = false;
-            ResetAdaptedModel();
-        }
-
-        /// <summary>
-        /// 清除自适应已识别的逆变器机型缓存及检测器窗口（用于手动切换串数/基准或重连串口后恢复真实判定）。
-        /// </summary>
-        public void ResetAdaptedModel()
-        {
-            _lastAdaptedModel = InverterModel.Unknown;
             if (Detector != null) Detector.Reset();
         }
 
@@ -951,24 +941,9 @@ namespace BMS_Protocol_Simulator
                                 if (needSwitch)
                                 {
                                     lastHandler = ProtocolHandler;
-                                }
-
-                                bool modelChanged = (det.Model != InverterModel.Unknown && det.Model != _lastAdaptedModel);
-                                if (modelChanged)
-                                {
-                                    _lastAdaptedModel = det.Model;
-                                    string targetModelName = det.Model == InverterModel.INV_3KU ? "3KU" : "6KU";
-                                    if (Model.ActiveProfileName != targetModelName)
-                                    {
-                                        Model.ApplyProfile(targetModelName);
-                                    }
-                                }
-
-                                if (needSwitch || modelChanged)
-                                {
                                     if (OnAutoAdapted != null)
                                     {
-                                        OnAutoAdapted(this, new AutoAdaptEventArgs(det.Protocol, det.Model));
+                                        OnAutoAdapted(this, new AutoAdaptEventArgs(det.Protocol, InverterModel.Unknown));
                                     }
                                 }
                             }

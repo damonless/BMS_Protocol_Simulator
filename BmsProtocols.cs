@@ -1413,10 +1413,10 @@ namespace BMS_Protocol_Simulator
                     ushort cellVoltMax, cellVoltMin;
                     model.GetCellMillivolts(0, cellCount, out cellVoltMax, out cellVoltMin);
 
-                    // 温度: 绝对开尔文温度 * 10 (Kelvin: 0.1K, e.g. 25.5°C = 25.5*10 + 2731 = 2986)
+                    // 温度: 绝对开尔文温度 * 10 (Kelvin: 0.1K, e.g. 29.0°C = 290 + 2731 = 3021; 常态无偏置，仅告警时附加温差)
                     ushort uKelvinAvg = (ushort)Math.Max(0, Math.Min(65535, Math.Round(model.Temperature * 10 + 2731)));
-                    ushort uKelvinMax = (ushort)(uKelvinAvg + (model.WarnHighTemp ? 40 : 5));
-                    ushort uKelvinMin = (ushort)Math.Max(0, uKelvinAvg - (model.WarnLowTemp ? 40 : 5));
+                    ushort uKelvinMax = (ushort)Math.Min(65535, uKelvinAvg + (model.WarnHighTemp ? 40 : 0));
+                    ushort uKelvinMin = (ushort)Math.Max(0, uKelvinAvg - (model.WarnLowTemp ? 40 : 0));
 
                     StringBuilder sb = new StringBuilder();
                     sb.Append(((ushort)uVoltMv).ToString("X4"));          // 1. 电池组系统总平均电压 (mV)
@@ -2130,14 +2130,9 @@ namespace BMS_Protocol_Simulator
 
                 lock (model.SyncRoot)
                 {
-                    bool injectedHit = false;
                     for (int i = 0; i < regCount; i++)
                     {
                         ushort regAddr = (ushort)(regStart + i);
-                        if (IsShengyangInjectedRegister(model.FaultInjection, regAddr))
-                        {
-                            injectedHit = true;
-                        }
                         ushort val = GetLibModbusRegisterValue(regAddr, model);
                         resp[3 + i * 2] = (byte)(val >> 8);
                         resp[3 + i * 2 + 1] = (byte)(val & 0xFF);
@@ -2146,13 +2141,6 @@ namespace BMS_Protocol_Simulator
                     string statusTag = "";
                     if (model.HasProtection) statusTag += string.Format(" [保护跳闸: {0}]", model.GetActiveProtectionsSummary());
                     if (model.HasWarning) statusTag += string.Format(" [告警提示: {0}]", model.GetActiveWarningsSummary());
-                    if (injectedHit)
-                    {
-                        if (model.FaultInjection == SlaveFaultInjectionMode.ShengyangInvalidNonCritical)
-                            statusTag += " [故障注入: 非关键寄存器置0xFFFF]";
-                        else if (model.FaultInjection == SlaveFaultInjectionMode.ShengyangInvalidCritical)
-                            statusTag += " [故障注入: 关键总压/SOC置0xFFFF]";
-                    }
 
                     decodedInfo = string.Format("[SHENGYANG] 应答 ID:{0:X2} 读 0x{1:X4} ({2}寄存器) -> 电压:{3:F2}V, SOC:{4:F0}%, 电流:{5:F2}A, 温度:{6:F1}°C{7}",
                         id, regStart, regCount, model.Voltage, model.SOC, model.Current, model.Temperature, statusTag);
@@ -2190,40 +2178,8 @@ namespace BMS_Protocol_Simulator
             return resp;
         }
 
-        private static bool IsShengyangInjectedRegister(SlaveFaultInjectionMode mode, ushort regAddress)
-        {
-            if (mode == SlaveFaultInjectionMode.ShengyangInvalidCritical)
-            {
-                return regAddress == 0x1000 || regAddress == 0x1008;
-            }
-            if (mode == SlaveFaultInjectionMode.ShengyangInvalidNonCritical)
-            {
-                switch (regAddress)
-                {
-                    case 0x1001:
-                    case 0x1002:
-                    case 0x1003:
-                    case 0x1009:
-                    case 0x100A:
-                    case 0x100C:
-                    case 0x1010:
-                    case 0x1011:
-                    case 0x1012:
-                    case 0x1014:
-                    case 0x1015:
-                        return true;
-                }
-            }
-            return false;
-        }
-
         private ushort GetLibModbusRegisterValue(ushort regAddress, BmsDataModel model)
         {
-            if (IsShengyangInjectedRegister(model.FaultInjection, regAddress))
-            {
-                return 0xFFFF;
-            }
-
             switch (regAddress)
             {
                 case 0x1000: // 电压 (10mV)
@@ -2556,9 +2512,7 @@ namespace BMS_Protocol_Simulator
                         // 0x03: 读基本信息与状态 (36 字节)
                         byte[] data = new byte[36];
 
-                        bool forcedUnit100mA = (model.FaultInjection == SlaveFaultInjectionMode.JbdForceUnit100mA);
-                        bool autoUnit100mA = (Math.Abs(model.Current) > 327.67) || (model.RemainingCapacity > 655.35) || (model.FullCapacity > 655.35);
-                        bool useUnit100mA = forcedUnit100mA || autoUnit100mA;
+                        bool useUnit100mA = (Math.Abs(model.Current) > 327.67) || (model.RemainingCapacity > 655.35) || (model.FullCapacity > 655.35);
                         double unitScale = useUnit100mA ? 10.0 : 100.0;
 
                         // Bytes 0..1: 总电压 (10mV)
@@ -2683,11 +2637,13 @@ namespace BMS_Protocol_Simulator
                         data[35] = (byte)(balCurr & 0xFF);
 
                         string unitTag = useUnit100mA ? " [100mA/100mAh模式: FET Bit7=1]" : "";
-                        if (forcedUnit100mA) unitTag += " [故障注入: JBD强制FET Bit7=1]";
+                        string statusTag = "";
+                        if (model.HasProtection) statusTag += string.Format(" [保护跳闸: {0}]", model.GetActiveProtectionsSummary());
+                        if (model.HasWarning) statusTag += string.Format(" [告警提示: {0}]", model.GetActiveWarningsSummary());
 
                         txResponse = JbdChecksum.BuildResponse(0x03, 0x00, data, callbackId);
-                        decodedInfo = string.Format("[JBD V12] 响应 0x03 基本信息: 电压={0:F2}V, 电流={1:F2}A, SOC={2:F0}%, 串数={3}S, 保护=0x{4:X4}, 告警=0x{5:X4}{6}",
-                            model.Voltage, model.Current, model.SOC, strings, prot, alarm, unitTag);
+                        decodedInfo = string.Format("[JBD V12] 响应 0x03 基本信息: 电压={0:F2}V, 电流={1:F2}A, SOC={2:F0}%, 串数={3}S, 保护=0x{4:X4}, 告警=0x{5:X4}{6}{7}",
+                            model.Voltage, model.Current, model.SOC, strings, prot, alarm, unitTag, statusTag);
                         return true;
                     }
                     else if (cmd == 0x04)
@@ -3144,8 +3100,12 @@ namespace BMS_Protocol_Simulator
                         model.WarnLowCapacity = (alarm & 0x0800) != 0;
                     }
 
-                    decodedInfo = string.Format("[JBD V12] 成功解析 0x03 基本信息: 电压={0:F2}V, 电流={1:F2}A, SOC={2:F0}%, 温度={3:F1}°C, 满充容量={4:F2}Ah",
-                        model.Voltage, model.Current, model.SOC, model.Temperature, model.FullCapacity);
+                    string statusTag = "";
+                    if (model.HasProtection) statusTag += string.Format(" [保护跳闸: {0}]", model.GetActiveProtectionsSummary());
+                    if (model.HasWarning) statusTag += string.Format(" [告警提示: {0}]", model.GetActiveWarningsSummary());
+
+                    decodedInfo = string.Format("[JBD V12] 成功解析 0x03 基本信息: 电压={0:F2}V, 电流={1:F2}A, SOC={2:F0}%, 温度={3:F1}°C, 满充容量={4:F2}Ah{5}",
+                        model.Voltage, model.Current, model.SOC, model.Temperature, model.FullCapacity, statusTag);
                     return true;
                 }
                 else if (cmd == 0x04)
@@ -3463,6 +3423,80 @@ namespace BMS_Protocol_Simulator
     // ─────────────────────────────────────────────────────────────
     public static class FrameAnatomyInspector
     {
+        private static string InferDissectedProtocolLabel(byte[] raw, string summaryPart, string currentProtocolName, out string resolvedModbusProto)
+        {
+            resolvedModbusProto = currentProtocolName;
+            if (raw != null && raw.Length > 0)
+            {
+                if (raw[0] == 0x7E)
+                {
+                    resolvedModbusProto = "PYLONTECH";
+                    return "PYLONTECH (RS485 ASCII) [按帧特征识别]";
+                }
+                if (raw[0] == 0xDD)
+                {
+                    resolvedModbusProto = "JBD";
+                    return "JBD (RS485/UART V12) [按帧特征识别]";
+                }
+                if (raw.Length >= 2)
+                {
+                    byte fc = raw[1];
+                    if (fc == 0x11 || fc == 0x04 || (raw.Length == 5 && (fc == 0x84 || fc == 0x91)))
+                    {
+                        resolvedModbusProto = "SHENGYANG";
+                        return "SHENGYANG (RS485 V1.30) [按功能码识别]";
+                    }
+                    if (fc == 0x03 && raw.Length >= 6)
+                    {
+                        int vRegCount = (raw[2] << 8) | raw[3];
+                        if (4 + vRegCount * 2 + 2 == raw.Length && (3 + raw[2] + 2 != raw.Length))
+                        {
+                            resolvedModbusProto = "VOLTRONIC";
+                            return "VOLTRONIC (Modbus 4字节帧头) [按帧头识别]";
+                        }
+                    }
+                    if (raw.Length == 8 && fc == 0x03)
+                    {
+                        ushort startReg = (ushort)((raw[2] << 8) | raw[3]);
+                        ushort regCount = (ushort)((raw[4] << 8) | raw[5]);
+                        if ((startReg == 0x0014 && regCount == 15) || (startReg == 0x0001 && regCount == 35) ||
+                            (startReg >= 0x0071 && startReg <= 0x0080))
+                        {
+                            resolvedModbusProto = "GROWATT";
+                            return "GROWATT (Modbus RTU) [按寄存器地址识别]";
+                        }
+                        if ((startReg == 0x0030 && regCount <= 6) || (startReg == 0x0060 && regCount <= 10) ||
+                            (startReg == 0x0070 && regCount <= 5) || (startReg == 0x0026 && regCount <= 10) ||
+                            (startReg == 0x0010 && regCount == 1) || (startReg == 0x0011 && regCount <= 16))
+                        {
+                            resolvedModbusProto = "VOLTRONIC";
+                            return "VOLTRONIC (Modbus RTU) [按寄存器地址识别]";
+                        }
+                        if ((startReg == 0x0020 && regCount == 12) || (startReg == 0x0040 && regCount == 12) ||
+                            (startReg >= 0x0011 && startReg <= 0x001F) || (startReg >= 0x0040 && startReg <= 0x005A))
+                        {
+                            resolvedModbusProto = "CVTE";
+                            return "CVTE (Modbus RTU) [按寄存器地址识别]";
+                        }
+                    }
+                }
+            }
+
+            if (!string.IsNullOrEmpty(summaryPart))
+            {
+                string upperSum = summaryPart.ToUpperInvariant();
+                if (upperSum.Contains("[CVTE")) { resolvedModbusProto = "CVTE"; return "CVTE (Modbus RTU) [按日志摘要识别]"; }
+                if (upperSum.Contains("[GROWATT")) { resolvedModbusProto = "GROWATT"; return "GROWATT (Modbus RTU) [按日志摘要识别]"; }
+                if (upperSum.Contains("[VOLTRONIC")) { resolvedModbusProto = "VOLTRONIC"; return "VOLTRONIC (Modbus RTU) [按日志摘要识别]"; }
+                if (upperSum.Contains("[SHENGYANG")) { resolvedModbusProto = "SHENGYANG"; return "SHENGYANG (RS485 V1.30) [按日志摘要识别]"; }
+                if (upperSum.Contains("[JBD")) { resolvedModbusProto = "JBD"; return "JBD (RS485/UART V12) [按日志摘要识别]"; }
+                if (upperSum.Contains("[PYLON")) { resolvedModbusProto = "PYLONTECH"; return "PYLONTECH (RS485 ASCII) [按日志摘要识别]"; }
+            }
+
+            string fallback = string.IsNullOrEmpty(currentProtocolName) ? "未知" : currentProtocolName;
+            return fallback + " (按界面当前协议参考)";
+        }
+
         public static string DissectLogLine(string logLine, string currentProtocolName)
         {
             if (string.IsNullOrEmpty(logLine)) return "未选中有效报文行。";
@@ -3508,12 +3542,18 @@ namespace BMS_Protocol_Simulator
                 }
             }
 
+            byte[] raw = bytes.ToArray();
+            string resolvedModbusProto = currentProtocolName;
+            string frameProtocolLabel = (raw.Length > 0)
+                ? InferDissectedProtocolLabel(raw, summaryPart, currentProtocolName, out resolvedModbusProto)
+                : (string.IsNullOrEmpty(currentProtocolName) ? "未知" : currentProtocolName);
+
             StringBuilder sb = new StringBuilder();
             sb.AppendLine("══════════════════════════════════════════════════════════════════════════════════════");
             sb.AppendLine("  BMS 协议帧深度解剖报告 (Frame Anatomy Inspector)");
             sb.AppendLine("══════════════════════════════════════════════════════════════════════════════════════");
             sb.AppendLine(string.Format("• 传输方向 : {0}", direction));
-            sb.AppendLine(string.Format("• 当前协议 : {0}", currentProtocolName ?? "未知"));
+            sb.AppendLine(string.Format("• {0} : {1}", raw.Length > 0 ? "报文协议" : "参考协议", frameProtocolLabel));
             sb.AppendLine(string.Format("• 字节长度 : {0} Bytes", bytes.Count));
             if (!string.IsNullOrEmpty(summaryPart))
             {
@@ -3528,7 +3568,6 @@ namespace BMS_Protocol_Simulator
                 return sb.ToString().TrimEnd('\r', '\n');
             }
 
-            byte[] raw = bytes.ToArray();
             AppendFormattedHexBlock(sb, "• 原始 HEX : ", raw);
             sb.AppendLine("──────────────────────────────────────────────────────────────────────────────────────");
 
@@ -3857,7 +3896,7 @@ namespace BMS_Protocol_Simulator
                 }
 
                 ushort inferredStartReg;
-                bool hasStartReg = TryInferModbusStartAddress(summaryPart, currentProtocolName, raw[1], regCount, isVoltronicHeader, out inferredStartReg);
+                bool hasStartReg = TryInferModbusStartAddress(summaryPart, resolvedModbusProto, raw[1], regCount, isVoltronicHeader, out inferredStartReg);
 
                 sb.AppendLine(string.Format("• 从机地址 (Slave ID) : 0x{0:X2} ({0})", raw[0]));
                 sb.AppendLine(string.Format("• 功能码   (Function) : 0x{0:X2} ({1})", raw[1], raw[1] == 0x04 ? "读输入寄存器应答" : "读保持寄存器应答"));
@@ -3878,7 +3917,7 @@ namespace BMS_Protocol_Simulator
                         short sVal = (short)uVal;
                         ushort regAddr = (ushort)(inferredStartReg + i);
                         string scaleCol = PadLeftDisplay(string.Format("{0:F2}", sVal / 100.0), 7) + " (÷100)";
-                        string semantic = GetModbusRegisterSemantic(currentProtocolName, raw[1], regAddr, uVal, sVal);
+                        string semantic = GetModbusRegisterSemantic(resolvedModbusProto, raw[1], regAddr, uVal, sVal);
                         sb.AppendLine("│ " + PadRightDisplay(string.Format("Word #{0}", i), 8)
                             + " │ " + PadRightDisplay(string.Format("0x{0:X4}", regAddr), 8)
                             + " │ " + PadRightDisplay(string.Format("0x{0:X4}", uVal), 8)

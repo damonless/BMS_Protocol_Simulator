@@ -526,12 +526,10 @@ namespace BMS_Protocol_Simulator
         private StatusStrip statusStrip;
         private ToolStripStatusLabel lblStatusText, lblProtocolBadge;
 
-        // ── 智能机型与协议自适应识别与扩展设定 ──
+        // ── 智能协议自适应识别与扩展设定 ──
         private CheckBox chkAutoAdapt;
         private Label lblCellCount;
         private ComboBox cboCellCount;
-        private Label lblFaultInject;
-        private ComboBox cboFaultInject;
 
         private Font _flagFontRegular;
         private Font _flagFontBold;
@@ -790,30 +788,6 @@ namespace BMS_Protocol_Simulator
             };
             flpTopRow2.Controls.Add(cboCellDelta);
 
-            lblFaultInject = new Label { Text = "异常注入:", AutoSize = true, Margin = new Padding(4, 6, 2, 0) };
-            flpTopRow2.Controls.Add(lblFaultInject);
-
-            cboFaultInject = new ComboBox { Width = 148, DropDownWidth = 210, DropDownStyle = ComboBoxStyle.DropDownList, Margin = new Padding(0, 3, 4, 0) };
-            cboFaultInject.Items.AddRange(new object[] {
-                "无 (正常编码)",
-                "圣阳: 非关键字段置0xFFFF",
-                "圣阳: 总压与SOC置0xFFFF",
-                "JBD: 强制FET Bit7=1 (100mA)"
-            });
-            cboFaultInject.SelectedIndex = 0;
-            cboFaultInject.SelectedIndexChanged += delegate(object s, EventArgs e) {
-                SlaveFaultInjectionMode mode = SlaveFaultInjectionMode.None;
-                if (cboFaultInject.SelectedIndex == 1) mode = SlaveFaultInjectionMode.ShengyangInvalidNonCritical;
-                else if (cboFaultInject.SelectedIndex == 2) mode = SlaveFaultInjectionMode.ShengyangInvalidCritical;
-                else if (cboFaultInject.SelectedIndex == 3) mode = SlaveFaultInjectionMode.JbdForceUnit100mA;
-                lock (_model.SyncRoot) { _model.FaultInjection = mode; }
-                if (!_isUpdatingUi)
-                {
-                    lblStatusText.Text = string.Format("从机异常注入模式: {0}", cboFaultInject.SelectedItem);
-                }
-            };
-            flpTopRow2.Controls.Add(cboFaultInject);
-
             btnScanPacks = new Button { Text = "扫描从机", Width = 72, Height = 25, Margin = new Padding(4, 2, 6, 0), Visible = false };
             btnScanPacks.Click += delegate(object s, EventArgs e) {
                 if (_comm.IsRunning && !_comm.IsPhysicalPortOpen)
@@ -1039,7 +1013,6 @@ namespace BMS_Protocol_Simulator
             };
             btnProfile3KU.Click += delegate(object s, EventArgs e) {
                 _model.ApplyProfile("3KU");
-                _comm.ResetAdaptedModel();
                 SyncModelToUI();
                 CommitAllControls();
                 lblStatusText.Text = "已应用 [24V (3KU) / 8S] 基准参数套系";
@@ -1055,7 +1028,6 @@ namespace BMS_Protocol_Simulator
             };
             btnProfile6KU.Click += delegate(object s, EventArgs e) {
                 _model.ApplyProfile("6KU");
-                _comm.ResetAdaptedModel();
                 SyncModelToUI();
                 CommitAllControls();
                 lblStatusText.Text = "已应用 [48V (6KU) / 16S] 基准参数套系";
@@ -1089,7 +1061,6 @@ namespace BMS_Protocol_Simulator
                     _model.CellCount = cells;
                     vPack = _model.Voltage;
                 }
-                _comm.ResetAdaptedModel();
                 lblStatusText.Text = string.Format("模拟串数已设为 {0} (当前总压 {1:F2}V)", cboCellCount.SelectedItem, vPack);
                 SavePersistentConfig();
             };
@@ -1107,8 +1078,8 @@ namespace BMS_Protocol_Simulator
                 if (!_isUpdatingUi)
                 {
                     lblStatusText.Text = chkAutoAdapt.Checked
-                        ? "智能自适应已开启：收到逆变器报文时将自动匹配机型与协议"
-                        : "智能自适应已关闭：保持当前手动协议与套系配置";
+                        ? "智能自适应已开启：收到逆变器报文时将自动匹配通信协议（保持当前电压与串数）"
+                        : "智能自适应已关闭：保持当前手动协议与参数配置";
                     SavePersistentConfig();
                 }
             };
@@ -2277,8 +2248,6 @@ namespace BMS_Protocol_Simulator
                 if (cboSimDelay != null) cboSimDelay.Visible = false;
                 if (lblCellDelta != null) lblCellDelta.Visible = false;
                 if (cboCellDelta != null) cboCellDelta.Visible = false;
-                if (lblFaultInject != null) lblFaultInject.Visible = false;
-                if (cboFaultInject != null) cboFaultInject.Visible = false;
 
                 lblIdTag.Text = "目标ID:";
                 numSpecificId.Enabled = true;
@@ -2322,8 +2291,6 @@ namespace BMS_Protocol_Simulator
                 if (cboSimDelay != null) cboSimDelay.Visible = true;
                 if (lblCellDelta != null) lblCellDelta.Visible = true;
                 if (cboCellDelta != null) cboCellDelta.Visible = true;
-                if (lblFaultInject != null) lblFaultInject.Visible = true;
-                if (cboFaultInject != null) cboFaultInject.Visible = true;
 
                 lblIdTag.Text = "从机ID:";
                 numSpecificId.Enabled = !chkReplyAllIds.Checked;
@@ -2722,15 +2689,9 @@ namespace BMS_Protocol_Simulator
                     }
                 }
 
-                if (e.Model != InverterModel.Unknown)
-                {
-                    SyncModelToUI();
-                    CommitAllControls();
-                }
-
                 UpdateProtocolControlStates();
                 UpdateProtocolBadge();
-                lblStatusText.Text = string.Format("自适应生效：已匹配为 [{0}] {1}", e.Model != InverterModel.Unknown ? (e.Model == InverterModel.INV_3KU ? "24V (3KU)" : "48V (6KU)") : "保持当前配置", targetProtName);
+                lblStatusText.Text = string.Format("自适应生效：已切换为 [{0}] 协议（保持当前电压与串数设定）", targetProtName);
                 SavePersistentConfig();
             }));
         }
