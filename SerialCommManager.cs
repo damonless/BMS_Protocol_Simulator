@@ -229,6 +229,7 @@ namespace BMS_Protocol_Simulator
                     WasScanCancelled = false;
                     WasScanAbortedByDisconnect = false;
                     IsBmsLost = false;
+                    ResetAdaptedModel();
 
                     session = new WorkerSession(sid, portName, newPort);
                     _workerThread = new Thread(WorkerLoop);
@@ -454,6 +455,14 @@ namespace BMS_Protocol_Simulator
             TxCount = 0;
             ErrorCount = 0;
             IsBmsLost = false;
+            ResetAdaptedModel();
+        }
+
+        /// <summary>
+        /// 清除自适应已识别的逆变器机型缓存及检测器窗口（用于手动切换串数/基准或重连串口后恢复真实判定）。
+        /// </summary>
+        public void ResetAdaptedModel()
+        {
             _lastAdaptedModel = InverterModel.Unknown;
             if (Detector != null) Detector.Reset();
         }

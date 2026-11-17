@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Text;
 using System.Collections.Generic;
 
@@ -20,9 +21,18 @@ namespace BMS_Protocol_Simulator
         MasterPoller        // 模拟逆变器主动轮询电池包
     }
 
+    public enum SlaveFaultInjectionMode
+    {
+        None = 0,
+        ShengyangInvalidNonCritical = 1, // 圣阳非关键回退字段置 0xFFFF (保留总压 0x1000 与 SOC 0x1008)
+        ShengyangInvalidCritical = 2,    // 圣阳关键总压 0x1000 与 SOC 0x1008 置 0xFFFF (测试拒收保护)
+        JbdForceUnit100mA = 3            // JBD 强制启用 FET Bit7=1 (100mA / 100mAh 分支)
+    }
+
     public class BmsParameterProfile
     {
         public string ProfileName { get; set; }
+        public int CellCount { get; set; }
         public double Voltage { get; set; }
         public double Current { get; set; }
         public double Temperature { get; set; }
@@ -36,26 +46,12 @@ namespace BMS_Protocol_Simulator
         public double CutoffVoltage { get; set; }
         public int CycleCount { get; set; }
 
-        public BmsParameterProfile(string name = "3KU")
+        public BmsParameterProfile(string name = "6KU")
         {
-            ProfileName = name;
-            if (name == "6KU")
+            if (string.Equals(name, "3KU", StringComparison.OrdinalIgnoreCase))
             {
-                Voltage = 53.00;
-                Current = 0.00;
-                Temperature = 28.0;
-                SOC = 100.0;
-                SOH = 100.0;
-                RemainingCapacity = 100.0;
-                FullCapacity = 100.0;
-                MaxChargeCurrent = 100.0;
-                MaxDischargeCurrent = 100.0;
-                CVVoltage = 56.00;
-                CutoffVoltage = 42.00;
-                CycleCount = 50;
-            }
-            else // 默认 3KU (24V 体系)
-            {
+                ProfileName = "3KU";
+                CellCount = 8;
                 Voltage = 28.00;
                 Current = 0.00;
                 Temperature = 28.0;
@@ -69,12 +65,30 @@ namespace BMS_Protocol_Simulator
                 CutoffVoltage = 21.00;
                 CycleCount = 50;
             }
+            else // 默认 6KU (48V 体系)
+            {
+                ProfileName = "6KU";
+                CellCount = 16;
+                Voltage = 53.00;
+                Current = 0.00;
+                Temperature = 28.0;
+                SOC = 100.0;
+                SOH = 100.0;
+                RemainingCapacity = 100.0;
+                FullCapacity = 100.0;
+                MaxChargeCurrent = 100.0;
+                MaxDischargeCurrent = 100.0;
+                CVVoltage = 56.00;
+                CutoffVoltage = 42.00;
+                CycleCount = 50;
+            }
         }
 
         public BmsParameterProfile Clone()
         {
             return new BmsParameterProfile(ProfileName)
             {
+                CellCount = this.CellCount,
                 Voltage = this.Voltage,
                 Current = this.Current,
                 Temperature = this.Temperature,
@@ -209,12 +223,20 @@ namespace BMS_Protocol_Simulator
         }
 
 
-        // ── 扩展仿真参数：单芯压差拉偏 (mV) ──
+        // ── 扩展仿真参数：单芯压差拉偏 (mV)、显式串数与从机容错注入模式 ──
         public int CellImbalanceMv { get; set; }       // 单体最高与最低电芯压差设定 (mV, 如 0 / 50 / 150 / 300)
+        public int CellCount { get; set; }             // 显式电池串数 (8 / 15 / 16)
+        public SlaveFaultInjectionMode FaultInjection { get; set; }
+
+        public int GetEffectiveCellCount()
+        {
+            if (CellCount == 8 || CellCount == 15 || CellCount == 16) return CellCount;
+            return string.Equals(ActiveProfileName, "3KU", StringComparison.OrdinalIgnoreCase) ? 8 : 16;
+        }
 
         public ushort GetCellMillivolts(int cellIndexZeroBased, int cellCount, out ushort maxCellMv, out ushort minCellMv)
         {
-            if (cellCount <= 0) cellCount = (Voltage < 36.0) ? 8 : 16;
+            if (cellCount <= 0) cellCount = GetEffectiveCellCount();
             int avgMv = (int)Math.Round((Voltage * 1000.0) / cellCount);
             int effDelta = CellImbalanceMv;
             if (effDelta <= 0) effDelta = WarnVoltDiff ? 240 : 20; // 勾选压差告警时自动注入 240mV 极值压差，常态保持 20mV 自然微差
@@ -252,14 +274,14 @@ namespace BMS_Protocol_Simulator
 
         public void ApplyProfile(string profileName)
         {
-            string target = (profileName != null && profileName.ToUpperInvariant().Contains("6KU")) ? "6KU" : "3KU";
-            ActiveProfileName = target;
+            string target = (profileName != null && profileName.ToUpperInvariant().Contains("3KU")) ? "3KU" : "6KU";
             ApplyDefaultConfig(new BmsParameterProfile(target));
         }
 
         public BmsDataModel()
         {
-            ApplyProfile("3KU");
+            FaultInjection = SlaveFaultInjectionMode.None;
+            ApplyProfile("6KU");
         }
 
         public void ApplyDefaultConfig(BmsParameterProfile profile)
@@ -268,6 +290,9 @@ namespace BMS_Protocol_Simulator
             lock (_lock)
             {
                 if (!string.IsNullOrEmpty(profile.ProfileName)) ActiveProfileName = profile.ProfileName;
+                CellCount = (profile.CellCount == 8 || profile.CellCount == 15 || profile.CellCount == 16)
+                    ? profile.CellCount
+                    : (string.Equals(ActiveProfileName, "3KU", StringComparison.OrdinalIgnoreCase) ? 8 : 16);
 
                 Voltage = profile.Voltage;
                 Current = profile.Current;
@@ -290,6 +315,160 @@ namespace BMS_Protocol_Simulator
                 StatusFullCharge = false;
                 StatusBalancing = false;
                 StatusSleep = false;
+            }
+        }
+    }
+
+    public class SimulatorDefaultsConfig
+    {
+        public string Protocol { get; set; }
+        public string Profile { get; set; }
+        public int CellCount { get; set; }
+        public int BaudRate { get; set; }
+        public bool AutoAdapt { get; set; }
+        public bool ReplyAllIds { get; set; }
+        public int SpecificId { get; set; }
+
+        public SimulatorDefaultsConfig()
+        {
+            Protocol = "CVTE";
+            Profile = "6KU";
+            CellCount = 16;
+            BaudRate = 9600;
+            AutoAdapt = false;
+            ReplyAllIds = true;
+            SpecificId = 1;
+        }
+
+        public static string DefaultFilePath
+        {
+            get { return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bms_default_config.ini"); }
+        }
+
+        public static int IndexFromProtocolName(string protocolName)
+        {
+            if (string.IsNullOrEmpty(protocolName)) return 0;
+            string p = protocolName.Trim().ToUpperInvariant();
+            if (p == "GROWATT" || p == "GROWATT_MODBUS") return 1;
+            if (p == "VOLTRONIC" || p == "VOLTRONIC_MODBUS") return 2;
+            if (p == "PYLONTECH" || p == "PYLONTECH_ASCII") return 3;
+            if (p == "SHENGYANG" || p == "LIB_MODBUS") return 4;
+            if (p == "JBD") return 5;
+            return 0;
+        }
+
+        public static string ProtocolNameFromIndex(int index)
+        {
+            switch (index)
+            {
+                case 1: return "GROWATT";
+                case 2: return "VOLTRONIC";
+                case 3: return "PYLONTECH";
+                case 4: return "SHENGYANG";
+                case 5: return "JBD";
+                default: return "CVTE";
+            }
+        }
+
+        private static bool IsValidBaud(int baud)
+        {
+            return baud == 2400 || baud == 4800 || baud == 9600 || baud == 19200 ||
+                   baud == 38400 || baud == 57600 || baud == 115200;
+        }
+
+        public static SimulatorDefaultsConfig Load(string filePath)
+        {
+            SimulatorDefaultsConfig cfg = new SimulatorDefaultsConfig();
+            if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return cfg;
+
+            try
+            {
+                string[] lines = File.ReadAllLines(filePath, Encoding.UTF8);
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    string line = (lines[i] ?? "").Trim();
+                    if (line.Length == 0 || line.StartsWith("#") || line.StartsWith(";") || line.StartsWith("[")) continue;
+                    int eq = line.IndexOf('=');
+                    if (eq <= 0) continue;
+
+                    string key = line.Substring(0, eq).Trim().ToUpperInvariant();
+                    string val = line.Substring(eq + 1).Trim();
+
+                    switch (key)
+                    {
+                        case "PROTOCOL":
+                            cfg.Protocol = ProtocolNameFromIndex(IndexFromProtocolName(val));
+                            break;
+                        case "PROFILE":
+                            cfg.Profile = val.ToUpperInvariant().Contains("3KU") ? "3KU" : "6KU";
+                            break;
+                        case "CELLCOUNT":
+                            int cells;
+                            if (int.TryParse(val, out cells) && (cells == 8 || cells == 15 || cells == 16))
+                                cfg.CellCount = cells;
+                            else
+                                cfg.CellCount = -1;
+                            break;
+                        case "BAUDRATE":
+                            int baud;
+                            if (int.TryParse(val, out baud) && IsValidBaud(baud))
+                                cfg.BaudRate = baud;
+                            break;
+                        case "AUTOADAPT":
+                            bool aa;
+                            if (bool.TryParse(val, out aa)) cfg.AutoAdapt = aa;
+                            break;
+                        case "REPLYALLIDS":
+                            bool ra;
+                            if (bool.TryParse(val, out ra)) cfg.ReplyAllIds = ra;
+                            break;
+                        case "SPECIFICID":
+                            int sid;
+                            if (int.TryParse(val, out sid) && sid >= 0 && sid <= 15)
+                                cfg.SpecificId = sid;
+                            break;
+                    }
+                }
+            }
+            catch
+            {
+                return new SimulatorDefaultsConfig();
+            }
+
+            if (cfg.CellCount != 8 && cfg.CellCount != 15 && cfg.CellCount != 16)
+            {
+                cfg.CellCount = string.Equals(cfg.Profile, "3KU", StringComparison.OrdinalIgnoreCase) ? 8 : 16;
+            }
+            return cfg;
+        }
+
+        public static void Save(string filePath, SimulatorDefaultsConfig cfg)
+        {
+            if (string.IsNullOrEmpty(filePath) || cfg == null) return;
+            try
+            {
+                int safeCells = (cfg.CellCount == 8 || cfg.CellCount == 15 || cfg.CellCount == 16)
+                    ? cfg.CellCount
+                    : (string.Equals(cfg.Profile, "3KU", StringComparison.OrdinalIgnoreCase) ? 8 : 16);
+                int safeBaud = IsValidBaud(cfg.BaudRate) ? cfg.BaudRate : 9600;
+                int safeId = Math.Max(0, Math.Min(15, cfg.SpecificId));
+                string safeProfile = string.Equals(cfg.Profile, "3KU", StringComparison.OrdinalIgnoreCase) ? "3KU" : "6KU";
+                string safeProtocol = ProtocolNameFromIndex(IndexFromProtocolName(cfg.Protocol));
+
+                StringBuilder sb = new StringBuilder();
+                sb.AppendLine("[Defaults]");
+                sb.AppendLine("Protocol=" + safeProtocol);
+                sb.AppendLine("Profile=" + safeProfile);
+                sb.AppendLine("CellCount=" + safeCells);
+                sb.AppendLine("BaudRate=" + safeBaud);
+                sb.AppendLine("AutoAdapt=" + (cfg.AutoAdapt ? "true" : "false"));
+                sb.AppendLine("ReplyAllIds=" + (cfg.ReplyAllIds ? "true" : "false"));
+                sb.AppendLine("SpecificId=" + safeId);
+
+                File.WriteAllText(filePath, sb.ToString(), new UTF8Encoding(false));
+            }
+            catch
+            {
             }
         }
     }

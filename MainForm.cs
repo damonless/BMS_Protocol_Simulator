@@ -526,14 +526,19 @@ namespace BMS_Protocol_Simulator
         private StatusStrip statusStrip;
         private ToolStripStatusLabel lblStatusText, lblProtocolBadge;
 
-        // ── 智能机型与协议自适应识别 ──
+        // ── 智能机型与协议自适应识别与扩展设定 ──
         private CheckBox chkAutoAdapt;
+        private Label lblCellCount;
+        private ComboBox cboCellCount;
+        private Label lblFaultInject;
+        private ComboBox cboFaultInject;
 
         private Font _flagFontRegular;
         private Font _flagFontBold;
         private Timer _deviceChangeTimer;
 
         private bool _isUpdatingUi = false;
+        private bool _isConfigInitialized = false;
         private bool _hasMasterTelemetryReceived = false;
 
         public MainForm()
@@ -558,9 +563,12 @@ namespace BMS_Protocol_Simulator
 
             BuildUI();
             RefreshPorts(true);
+            ApplyLoadedStartupConfig();
             SyncModelToUI();
             UpdateWorkModeUI();
             UpdateProtocolControlStates();
+            UpdateProtocolBadge();
+            _isConfigInitialized = true;
         }
 
         private void BuildUI()
@@ -642,6 +650,9 @@ namespace BMS_Protocol_Simulator
             cboBaud = new ComboBox { Width = 75, DropDownStyle = ComboBoxStyle.DropDownList };
             cboBaud.Items.AddRange(new object[] { "9600", "2400", "4800", "19200", "38400", "57600", "115200" });
             cboBaud.SelectedIndex = 0;
+            cboBaud.SelectedIndexChanged += delegate(object s, EventArgs e) {
+                if (!_isUpdatingUi) SavePersistentConfig();
+            };
             flpTopRow1.Controls.Add(cboBaud);
 
             Label lblProt = new Label { Text = "协议:", AutoSize = true, Margin = new Padding(6, 6, 2, 0) };
@@ -701,6 +712,7 @@ namespace BMS_Protocol_Simulator
             chkReplyAllIds.CheckedChanged += delegate(object s, EventArgs e) {
                 _comm.ReplyAllIds = chkReplyAllIds.Checked;
                 numSpecificId.Enabled = !chkReplyAllIds.Checked;
+                if (!_isUpdatingUi) SavePersistentConfig();
             };
             flpTopRow2.Controls.Add(chkReplyAllIds);
 
@@ -713,11 +725,15 @@ namespace BMS_Protocol_Simulator
                 bool idChanged = (_comm.TargetSlaveId != (byte)newId);
                 _comm.SpecificId = newId;
                 _comm.TargetSlaveId = (byte)newId;
-                if (!_isUpdatingUi && idChanged && _comm.CurrentWorkMode == WorkMode.MasterPoller)
+                if (!_isUpdatingUi)
                 {
-                    _hasMasterTelemetryReceived = false;
-                    ClearMasterTelemetryDisplay();
-                    _comm.NotifyContextReset();
+                    if (idChanged && _comm.CurrentWorkMode == WorkMode.MasterPoller)
+                    {
+                        _hasMasterTelemetryReceived = false;
+                        ClearMasterTelemetryDisplay();
+                        _comm.NotifyContextReset();
+                    }
+                    SavePersistentConfig();
                 }
             };
             flpTopRow2.Controls.Add(numSpecificId);
@@ -773,6 +789,30 @@ namespace BMS_Protocol_Simulator
                 lblStatusText.Text = string.Format("单芯压差已设为 {0}mV", deltaMv);
             };
             flpTopRow2.Controls.Add(cboCellDelta);
+
+            lblFaultInject = new Label { Text = "异常注入:", AutoSize = true, Margin = new Padding(4, 6, 2, 0) };
+            flpTopRow2.Controls.Add(lblFaultInject);
+
+            cboFaultInject = new ComboBox { Width = 148, DropDownWidth = 210, DropDownStyle = ComboBoxStyle.DropDownList, Margin = new Padding(0, 3, 4, 0) };
+            cboFaultInject.Items.AddRange(new object[] {
+                "无 (正常编码)",
+                "圣阳: 非关键字段置0xFFFF",
+                "圣阳: 总压与SOC置0xFFFF",
+                "JBD: 强制FET Bit7=1 (100mA)"
+            });
+            cboFaultInject.SelectedIndex = 0;
+            cboFaultInject.SelectedIndexChanged += delegate(object s, EventArgs e) {
+                SlaveFaultInjectionMode mode = SlaveFaultInjectionMode.None;
+                if (cboFaultInject.SelectedIndex == 1) mode = SlaveFaultInjectionMode.ShengyangInvalidNonCritical;
+                else if (cboFaultInject.SelectedIndex == 2) mode = SlaveFaultInjectionMode.ShengyangInvalidCritical;
+                else if (cboFaultInject.SelectedIndex == 3) mode = SlaveFaultInjectionMode.JbdForceUnit100mA;
+                lock (_model.SyncRoot) { _model.FaultInjection = mode; }
+                if (!_isUpdatingUi)
+                {
+                    lblStatusText.Text = string.Format("从机异常注入模式: {0}", cboFaultInject.SelectedItem);
+                }
+            };
+            flpTopRow2.Controls.Add(cboFaultInject);
 
             btnScanPacks = new Button { Text = "扫描从机", Width = 72, Height = 25, Margin = new Padding(4, 2, 6, 0), Visible = false };
             btnScanPacks.Click += delegate(object s, EventArgs e) {
@@ -981,41 +1021,77 @@ namespace BMS_Protocol_Simulator
 
             pnlTab.Controls.Add(grid, 0, 0);
 
-            // ── 行 1: 3KU / 6KU 一键基准按钮栏 ──
+            // ── 行 1: 24V / 48V 一键基准与串数设定栏 ──
             FlowLayoutPanel flpActions = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 Padding = new Padding(4, 4, 4, 4),
-                WrapContents = false
+                WrapContents = true
             };
             flpActions.MouseDown += onBlankMouseDown;
 
             btnProfile3KU = new Button
             {
-                Text = "3KU (24V) 基准",
-                Width = 104,
+                Text = "24V (3KU)",
+                Width = 92,
                 Height = 26,
                 Margin = new Padding(2, 2, 4, 2)
             };
             btnProfile3KU.Click += delegate(object s, EventArgs e) {
                 _model.ApplyProfile("3KU");
+                _comm.ResetAdaptedModel();
                 SyncModelToUI();
                 CommitAllControls();
-                lblStatusText.Text = "已应用 [3KU (24V)] 基准参数套系";
+                lblStatusText.Text = "已应用 [24V (3KU) / 8S] 基准参数套系";
+                SavePersistentConfig();
             };
 
             btnProfile6KU = new Button
             {
-                Text = "6KU (48V) 基准",
-                Width = 104,
+                Text = "48V (6KU)",
+                Width = 92,
                 Height = 26,
                 Margin = new Padding(2, 2, 6, 2)
             };
             btnProfile6KU.Click += delegate(object s, EventArgs e) {
                 _model.ApplyProfile("6KU");
+                _comm.ResetAdaptedModel();
                 SyncModelToUI();
                 CommitAllControls();
-                lblStatusText.Text = "已应用 [6KU (48V)] 基准参数套系";
+                lblStatusText.Text = "已应用 [48V (6KU) / 16S] 基准参数套系";
+                SavePersistentConfig();
+            };
+
+            lblCellCount = new Label
+            {
+                Text = "串数:",
+                AutoSize = true,
+                Margin = new Padding(4, 6, 2, 2)
+            };
+            lblCellCount.MouseDown += onBlankMouseDown;
+
+            cboCellCount = new ComboBox
+            {
+                Width = 88,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Margin = new Padding(0, 3, 6, 2)
+            };
+            cboCellCount.Items.AddRange(new object[] { "8S (24V)", "15S (48V)", "16S (48V)" });
+            cboCellCount.SelectedIndex = 2;
+            cboCellCount.SelectedIndexChanged += delegate(object s, EventArgs e) {
+                if (_isUpdatingUi) return;
+                int cells = 16;
+                if (cboCellCount.SelectedIndex == 0) cells = 8;
+                else if (cboCellCount.SelectedIndex == 1) cells = 15;
+                double vPack;
+                lock (_model.SyncRoot)
+                {
+                    _model.CellCount = cells;
+                    vPack = _model.Voltage;
+                }
+                _comm.ResetAdaptedModel();
+                lblStatusText.Text = string.Format("模拟串数已设为 {0} (当前总压 {1:F2}V)", cboCellCount.SelectedItem, vPack);
+                SavePersistentConfig();
             };
 
             chkAutoAdapt = new CheckBox
@@ -1023,14 +1099,18 @@ namespace BMS_Protocol_Simulator
                 Text = "自适应识别",
                 AutoSize = true,
                 Checked = false,
-                Margin = new Padding(6, 5, 4, 2),
+                Margin = new Padding(4, 5, 4, 2),
                 Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular)
             };
             chkAutoAdapt.CheckedChanged += delegate(object s, EventArgs e) {
                 _comm.AutoAdaptEnabled = chkAutoAdapt.Checked;
-                lblStatusText.Text = chkAutoAdapt.Checked
-                    ? "智能自适应已开启：收到逆变器报文时将自动匹配机型与协议"
-                    : "智能自适应已关闭：保持当前手动协议与套系配置";
+                if (!_isUpdatingUi)
+                {
+                    lblStatusText.Text = chkAutoAdapt.Checked
+                        ? "智能自适应已开启：收到逆变器报文时将自动匹配机型与协议"
+                        : "智能自适应已关闭：保持当前手动协议与套系配置";
+                    SavePersistentConfig();
+                }
             };
 
             lblHint = new Label
@@ -1045,6 +1125,8 @@ namespace BMS_Protocol_Simulator
 
             flpActions.Controls.Add(btnProfile3KU);
             flpActions.Controls.Add(btnProfile6KU);
+            flpActions.Controls.Add(lblCellCount);
+            flpActions.Controls.Add(cboCellCount);
             flpActions.Controls.Add(chkAutoAdapt);
             flpActions.Controls.Add(lblHint);
 
@@ -1273,6 +1355,47 @@ namespace BMS_Protocol_Simulator
                 {
                     message = "非法输入: 循环次数不能为负数！";
                     return false;
+                }
+            }
+
+            if (_comm == null || _comm.CurrentWorkMode == WorkMode.SlaveSimulator)
+            {
+                int protIdx = (cboProtocol != null && cboProtocol.SelectedIndex >= 0) ? cboProtocol.SelectedIndex : 0;
+                if (protIdx == 4) // SHENGYANG (uint16 0.01V / 0.01Ah, int16 0.01A)
+                {
+                    if (num == numCurrent && (value < -327.68M || value > 327.67M))
+                    {
+                        message = "非法输入: 圣阳协议电流寄存器 (0x1001, signed 0.01A) 有效范围为 -327.68A ~ +327.67A！";
+                        return false;
+                    }
+                    if (num == numMaxChgI && (value < 0 || value > 327.67M))
+                    {
+                        message = "非法输入: 圣阳协议最大充电电流 (0x100C) 有效范围为 0 ~ 327.67A！";
+                        return false;
+                    }
+                    if ((num == numRemCap || num == numFullCap) && value > 655.35M)
+                    {
+                        message = "非法输入: 圣阳协议容量寄存器 (0.01Ah, uint16) 最大支持 655.35Ah！";
+                        return false;
+                    }
+                    if ((num == numVoltage || num == numCvVolt) && value > 655.35M)
+                    {
+                        message = "非法输入: 圣阳协议电压寄存器 (0.01V, uint16) 最大支持 655.35V！";
+                        return false;
+                    }
+                }
+                else if (protIdx == 5) // JBD (uint16 0.01V; Bit7=1 支持 0.1Ah 最高 6553.5Ah)
+                {
+                    if (num == numVoltage && value > 655.35M)
+                    {
+                        message = "非法输入: JBD 协议总压寄存器 (0.01V, uint16) 最大支持 655.35V！";
+                        return false;
+                    }
+                    if ((num == numRemCap || num == numFullCap) && value > 6553.5M)
+                    {
+                        message = "非法输入: JBD 协议容量即使切换 FET Bit7=1 (0.1Ah) 最大仅支持 6553.5Ah！";
+                        return false;
+                    }
                 }
             }
 
@@ -2043,6 +2166,11 @@ namespace BMS_Protocol_Simulator
             int idx = (cboProtocol != null && cboProtocol.SelectedIndex >= 0) ? cboProtocol.SelectedIndex : 0;
             // idx: 0=CVTE, 1=GROWATT, 2=VOLTRONIC, 3=PYLONTECH, 4=SHENGYANG, 5=JBD
 
+            if (chkProtSoftStart != null)
+            {
+                chkProtSoftStart.Text = (idx == 5) ? "软件锁MOS(Bit12)" : "软起动失败";
+            }
+
             if (isMaster)
             {
                 NumericUpDown[] allNums = new NumericUpDown[] {
@@ -2108,13 +2236,13 @@ namespace BMS_Protocol_Simulator
             if (numVoltage != null) numVoltage.Enabled = true;
             if (numCurrent != null) numCurrent.Enabled = true;
             if (numSoc != null) numSoc.Enabled = true;
-            if (numCvVolt != null) numCvVolt.Enabled = true;
+            if (numCvVolt != null) numCvVolt.Enabled = (idx != 5);
             if (numFullCap != null) numFullCap.Enabled = true;
-            if (numMaxChgI != null) numMaxChgI.Enabled = true;
+            if (numMaxChgI != null) numMaxChgI.Enabled = (idx != 5);
             if (numTemp != null) numTemp.Enabled = true;
 
-            if (numCutoffVolt != null) numCutoffVolt.Enabled = (idx == 2 || idx == 3 || idx == 5);
-            if (numMaxDisI != null) numMaxDisI.Enabled = (idx == 1 || idx == 2 || idx == 3 || idx == 5);
+            if (numCutoffVolt != null) numCutoffVolt.Enabled = (idx == 2 || idx == 3);
+            if (numMaxDisI != null) numMaxDisI.Enabled = (idx == 1 || idx == 2 || idx == 3);
             if (numCycleCount != null) numCycleCount.Enabled = (idx != 2);
             if (numRemCap != null) numRemCap.Enabled = (idx != 2);
             if (numSoh != null) numSoh.Enabled = (idx == 0 || idx == 1 || idx == 3 || idx == 4);
@@ -2149,6 +2277,8 @@ namespace BMS_Protocol_Simulator
                 if (cboSimDelay != null) cboSimDelay.Visible = false;
                 if (lblCellDelta != null) lblCellDelta.Visible = false;
                 if (cboCellDelta != null) cboCellDelta.Visible = false;
+                if (lblFaultInject != null) lblFaultInject.Visible = false;
+                if (cboFaultInject != null) cboFaultInject.Visible = false;
 
                 lblIdTag.Text = "目标ID:";
                 numSpecificId.Enabled = true;
@@ -2161,6 +2291,8 @@ namespace BMS_Protocol_Simulator
 
                 if (btnProfile3KU != null) btnProfile3KU.Visible = false;
                 if (btnProfile6KU != null) btnProfile6KU.Visible = false;
+                if (lblCellCount != null) lblCellCount.Visible = false;
+                if (cboCellCount != null) cboCellCount.Visible = false;
                 if (chkAutoAdapt != null) chkAutoAdapt.Visible = false;
                 if (flpQuickPresets != null) flpQuickPresets.Enabled = false;
                 if (lblHint != null)
@@ -2190,6 +2322,8 @@ namespace BMS_Protocol_Simulator
                 if (cboSimDelay != null) cboSimDelay.Visible = true;
                 if (lblCellDelta != null) lblCellDelta.Visible = true;
                 if (cboCellDelta != null) cboCellDelta.Visible = true;
+                if (lblFaultInject != null) lblFaultInject.Visible = true;
+                if (cboFaultInject != null) cboFaultInject.Visible = true;
 
                 lblIdTag.Text = "从机ID:";
                 numSpecificId.Enabled = !chkReplyAllIds.Checked;
@@ -2202,6 +2336,8 @@ namespace BMS_Protocol_Simulator
 
                 if (btnProfile3KU != null) btnProfile3KU.Visible = true;
                 if (btnProfile6KU != null) btnProfile6KU.Visible = true;
+                if (lblCellCount != null) lblCellCount.Visible = true;
+                if (cboCellCount != null) cboCellCount.Visible = true;
                 if (chkAutoAdapt != null) chkAutoAdapt.Visible = true;
                 if (flpQuickPresets != null) flpQuickPresets.Enabled = true;
                 if (lblHint != null)
@@ -2212,7 +2348,16 @@ namespace BMS_Protocol_Simulator
 
                 if (wasMaster)
                 {
+                    int preservedCells;
+                    lock (_model.SyncRoot)
+                    {
+                        preservedCells = _model.GetEffectiveCellCount();
+                    }
                     _model.ApplyProfile(_model.ActiveProfileName);
+                    lock (_model.SyncRoot)
+                    {
+                        _model.CellCount = preservedCells;
+                    }
                     SyncModelToUI();
                 }
 
@@ -2284,31 +2429,112 @@ namespace BMS_Protocol_Simulator
             }));
         }
 
+        private void ApplyProtocolHandlerByIndex(int idx)
+        {
+            switch (idx)
+            {
+                case 0:
+                    _comm.ProtocolHandler = new CvteModbusHandler();
+                    break;
+                case 1:
+                    _comm.ProtocolHandler = new GrowattModbusHandler();
+                    break;
+                case 2:
+                    _comm.ProtocolHandler = new VoltronicModbusHandler();
+                    break;
+                case 3:
+                    _comm.ProtocolHandler = new PylontechAsciiHandler();
+                    break;
+                case 4:
+                    _comm.ProtocolHandler = new LibModbusHandler();
+                    break;
+                case 5:
+                    _comm.ProtocolHandler = new JbdBinaryHandler();
+                    break;
+            }
+        }
+
+        private void ApplyLoadedStartupConfig()
+        {
+            SimulatorDefaultsConfig cfg = SimulatorDefaultsConfig.Load(SimulatorDefaultsConfig.DefaultFilePath);
+
+            _isUpdatingUi = true;
+            try
+            {
+                string targetBaud = cfg.BaudRate.ToString();
+                for (int i = 0; i < cboBaud.Items.Count; i++)
+                {
+                    if (string.Equals(cboBaud.Items[i].ToString(), targetBaud, StringComparison.Ordinal))
+                    {
+                        cboBaud.SelectedIndex = i;
+                        break;
+                    }
+                }
+
+                int protIdx = SimulatorDefaultsConfig.IndexFromProtocolName(cfg.Protocol);
+                if (protIdx >= 0 && protIdx < cboProtocol.Items.Count)
+                {
+                    cboProtocol.SelectedIndex = protIdx;
+                    ApplyProtocolHandlerByIndex(protIdx);
+                }
+
+                _model.ApplyProfile(cfg.Profile);
+                lock (_model.SyncRoot)
+                {
+                    _model.CellCount = cfg.CellCount;
+                }
+
+                chkAutoAdapt.Checked = cfg.AutoAdapt;
+                _comm.AutoAdaptEnabled = cfg.AutoAdapt;
+
+                chkReplyAllIds.Checked = cfg.ReplyAllIds;
+                _comm.ReplyAllIds = cfg.ReplyAllIds;
+
+                int clampedId = Math.Max(0, Math.Min(15, cfg.SpecificId));
+                numSpecificId.Value = clampedId;
+                numSpecificId.Enabled = !cfg.ReplyAllIds;
+                _comm.SpecificId = clampedId;
+                _comm.TargetSlaveId = (byte)clampedId;
+            }
+            finally
+            {
+                _isUpdatingUi = false;
+            }
+        }
+
+        private void SavePersistentConfig()
+        {
+            if (!_isConfigInitialized) return;
+            SimulatorDefaultsConfig cfg = new SimulatorDefaultsConfig();
+            int protIdx = (cboProtocol != null && cboProtocol.SelectedIndex >= 0) ? cboProtocol.SelectedIndex : 0;
+            cfg.Protocol = SimulatorDefaultsConfig.ProtocolNameFromIndex(protIdx);
+
+            int baud = 9600;
+            if (cboBaud != null && cboBaud.SelectedItem != null)
+            {
+                int parsedBaud;
+                if (int.TryParse(cboBaud.SelectedItem.ToString(), out parsedBaud)) baud = parsedBaud;
+            }
+            cfg.BaudRate = baud;
+            cfg.AutoAdapt = (chkAutoAdapt != null && chkAutoAdapt.Checked);
+            cfg.ReplyAllIds = (chkReplyAllIds == null || chkReplyAllIds.Checked);
+            cfg.SpecificId = (numSpecificId != null) ? (int)numSpecificId.Value : 1;
+
+            lock (_model.SyncRoot)
+            {
+                cfg.Profile = string.Equals(_model.ActiveProfileName, "3KU", StringComparison.OrdinalIgnoreCase) ? "3KU" : "6KU";
+                cfg.CellCount = _model.GetEffectiveCellCount();
+            }
+
+            SimulatorDefaultsConfig.Save(SimulatorDefaultsConfig.DefaultFilePath, cfg);
+        }
+
         private void CboProtocol_SelectedIndexChanged(object sender, EventArgs e)
         {
+            int idx = cboProtocol.SelectedIndex;
             if (!_isUpdatingUi)
             {
-                switch (cboProtocol.SelectedIndex)
-                {
-                    case 0:
-                        _comm.ProtocolHandler = new CvteModbusHandler();
-                        break;
-                    case 1:
-                        _comm.ProtocolHandler = new GrowattModbusHandler();
-                        break;
-                    case 2:
-                        _comm.ProtocolHandler = new VoltronicModbusHandler();
-                        break;
-                    case 3:
-                        _comm.ProtocolHandler = new PylontechAsciiHandler();
-                        break;
-                    case 4:
-                        _comm.ProtocolHandler = new LibModbusHandler();
-                        break;
-                    case 5:
-                        _comm.ProtocolHandler = new JbdBinaryHandler();
-                        break;
-                }
+                ApplyProtocolHandlerByIndex(idx);
                 if (_comm.CurrentWorkMode == WorkMode.MasterPoller)
                 {
                     _hasMasterTelemetryReceived = false;
@@ -2316,8 +2542,36 @@ namespace BMS_Protocol_Simulator
                 }
                 _comm.NotifyContextReset();
             }
+
             UpdateProtocolControlStates();
             UpdateProtocolBadge();
+
+            if (!_isUpdatingUi)
+            {
+                if (_comm.CurrentWorkMode == WorkMode.SlaveSimulator)
+                {
+                    if (idx == 5)
+                    {
+                        lblStatusText.Text = "JBD 模式：0x03/0x04/0x05 不传输 CV/截止电压/限流（已置灰），软件锁MOS 对应 Bit12";
+                    }
+                    else if (idx == 4)
+                    {
+                        bool outOfRange = false;
+                        lock (_model.SyncRoot)
+                        {
+                            outOfRange = (_model.Current < -327.68 || _model.Current > 327.67 ||
+                                          _model.MaxChargeCurrent < 0 || _model.MaxChargeCurrent > 327.67 ||
+                                          _model.RemainingCapacity > 655.35 || _model.FullCapacity > 655.35 ||
+                                          _model.Voltage > 655.35 || _model.CVVoltage > 655.35);
+                        }
+                        if (outOfRange)
+                        {
+                            lblStatusText.Text = "警告: 当前模型参数超出圣阳协议范围 (电流±327.67A / 容量≤655.35Ah / 电压≤655.35V)，将按边界限幅编码";
+                        }
+                    }
+                }
+                SavePersistentConfig();
+            }
         }
 
         private void SetConnectionUiState(bool connected, string statusMsg)
@@ -2476,7 +2730,8 @@ namespace BMS_Protocol_Simulator
 
                 UpdateProtocolControlStates();
                 UpdateProtocolBadge();
-                lblStatusText.Text = string.Format("自适应生效：已匹配为 [{0}] {1}", e.Model != InverterModel.Unknown ? (e.Model == InverterModel.INV_3KU ? "3KU" : "6KU") : "自动", targetProtName);
+                lblStatusText.Text = string.Format("自适应生效：已匹配为 [{0}] {1}", e.Model != InverterModel.Unknown ? (e.Model == InverterModel.INV_3KU ? "24V (3KU)" : "48V (6KU)") : "保持当前配置", targetProtName);
+                SavePersistentConfig();
             }));
         }
 
@@ -2526,6 +2781,12 @@ namespace BMS_Protocol_Simulator
                 chkProtLt.Checked = _model.ProtUnderTemp;
                 chkProtSys.Checked = _model.ProtSystemFault;
                 chkProtSoftStart.Checked = _model.ProtSoftStart;
+
+                if (cboCellCount != null)
+                {
+                    int cells = _model.GetEffectiveCellCount();
+                    cboCellCount.SelectedIndex = (cells == 8) ? 0 : ((cells == 15) ? 1 : 2);
+                }
             }
             UpdateAlarmProtectionVisualStyles();
             _isUpdatingUi = false;
@@ -2810,6 +3071,8 @@ namespace BMS_Protocol_Simulator
                 }
                 _flashTimers.Clear();
             }
+
+            SavePersistentConfig();
 
             if (_comm != null)
             {
