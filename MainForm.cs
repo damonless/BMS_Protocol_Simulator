@@ -97,6 +97,7 @@ namespace BMS_Protocol_Simulator
             {
                 _comm.OnScanProgress += Comm_OnScanProgress;
                 _comm.OnScanPacksCompleted += Comm_OnScanPacksCompleted;
+                _comm.OnPortDisconnected += Comm_OnPortDisconnected;
             }
         }
 
@@ -206,6 +207,27 @@ namespace BMS_Protocol_Simulator
             }));
         }
 
+        private void Comm_OnPortDisconnected(object sender, PortDisconnectedEventArgs e)
+        {
+            if (this.IsDisposed || !this.IsHandleCreated) return;
+            this.BeginInvoke(new Action(delegate()
+            {
+                if (this.IsDisposed) return;
+                _isCompleted = true;
+                this.DialogResult = DialogResult.Abort;
+                this.Close();
+            }));
+        }
+
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            if (_comm != null)
+            {
+                _comm.StartScanOnlinePacks();
+            }
+        }
+
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             if (!_isCompleted && _comm != null)
@@ -216,6 +238,7 @@ namespace BMS_Protocol_Simulator
             {
                 _comm.OnScanProgress -= Comm_OnScanProgress;
                 _comm.OnScanPacksCompleted -= Comm_OnScanPacksCompleted;
+                _comm.OnPortDisconnected -= Comm_OnPortDisconnected;
             }
             base.OnFormClosing(e);
         }
@@ -224,13 +247,16 @@ namespace BMS_Protocol_Simulator
     // ── 报文深度解剖弹窗 (双击实时监视器任意报文行触发) ──
     public class FrameInspectorDialog : Form
     {
+        private Font _rtbFont;
+
         public FrameInspectorDialog(string reportText)
         {
             this.Text = "报文深度解剖器 (Frame Anatomy Inspector)";
-            this.Size = new Size(680, 480);
+            this.MinimumSize = new Size(680, 420);
             this.StartPosition = FormStartPosition.CenterParent;
             this.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular);
             this.MinimizeBox = false;
+            this.KeyPreview = true;
 
             try
             {
@@ -239,41 +265,183 @@ namespace BMS_Protocol_Simulator
             }
             catch { }
 
+            Panel pnlBody = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.FromArgb(15, 23, 42),
+                Padding = new Padding(16, 12, 16, 12)
+            };
+
             RichTextBox rtb = new RichTextBox
             {
                 Dock = DockStyle.Fill,
                 ReadOnly = true,
                 BackColor = Color.FromArgb(15, 23, 42),
                 ForeColor = Color.FromArgb(226, 232, 240),
-                Font = new Font("Consolas", 9.5F, FontStyle.Regular),
                 WordWrap = false,
                 BorderStyle = BorderStyle.None,
-                Text = reportText ?? ""
+                DetectUrls = false
             };
 
-            Panel pnlBottom = new Panel { Dock = DockStyle.Bottom, Height = 42, BackColor = Color.FromArgb(241, 245, 249) };
-            Button btnCopy = new Button { Text = "复制报告", Width = 100, Height = 28, Location = new Point(16, 7) };
+            pnlBody.Controls.Add(rtb);
+
+            Panel pnlBottom = new Panel
+            {
+                Dock = DockStyle.Bottom,
+                Size = new Size(780, 44),
+                BackColor = Color.FromArgb(241, 245, 249)
+            };
+
+            Button btnCopy = new Button
+            {
+                Text = "复制报告",
+                Width = 100,
+                Height = 28,
+                Location = new Point(16, 8),
+                UseVisualStyleBackColor = true
+            };
             btnCopy.Click += delegate(object s, EventArgs e) {
                 try
                 {
                     Clipboard.SetText(rtb.Text);
-                    btnCopy.Text = "已复制";
+                    btnCopy.Text = "✓ 已复制";
                 }
                 catch { }
             };
 
-            Button btnClose = new Button { Text = "关闭", Width = 80, Height = 28, Location = new Point(570, 7), Anchor = AnchorStyles.Top | AnchorStyles.Right, DialogResult = DialogResult.OK };
+            Button btnClose = new Button
+            {
+                Text = "关闭 (Esc)",
+                Width = 90,
+                Height = 28,
+                Location = new Point(pnlBottom.Width - 90 - 16, 8),
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                DialogResult = DialogResult.OK,
+                UseVisualStyleBackColor = true
+            };
+            pnlBottom.Resize += delegate(object s, EventArgs e) {
+                btnClose.Location = new Point(Math.Max(130, pnlBottom.ClientSize.Width - btnClose.Width - 16), 8);
+            };
+
             pnlBottom.Controls.Add(btnCopy);
             pnlBottom.Controls.Add(btnClose);
 
-            this.Controls.Add(rtb);
+            this.CancelButton = btnClose;
+            this.Controls.Add(pnlBody);
             this.Controls.Add(pnlBottom);
+
+            // 强制先创建 RichTextBox 原生句柄并关闭 AutoFont/DualFont，防止 CJK 与制表符触发非等宽字体回退
+            IntPtr h = rtb.Handle;
+            rtb.LanguageOption = (RichTextBoxLanguageOptions)0;
+            _rtbFont = new Font("Consolas", 10F, FontStyle.Regular);
+            rtb.Font = _rtbFont;
+            rtb.Text = reportText ?? "";
+            rtb.SelectionStart = 0;
+            rtb.SelectionLength = 0;
+
+            // 根据实际渲染像素尺寸与当前屏幕工作区动态计算弹窗最佳大小，免去手动全屏
+            AdjustDialogSizeToContent(rtb, pnlBody, pnlBottom);
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            if (_rtbFont != null)
+            {
+                _rtbFont.Dispose();
+                _rtbFont = null;
+            }
+            base.OnFormClosed(e);
+        }
+
+        private void AdjustDialogSizeToContent(RichTextBox rtb, Panel pnlBody, Panel pnlBottom)
+        {
+            try
+            {
+                Rectangle workArea = Screen.FromPoint(Cursor.Position).WorkingArea;
+                string[] lines = rtb.Lines;
+                int lineCount = (lines != null && lines.Length > 0) ? lines.Length : 1;
+
+                int maxLinePixelX = 0;
+                int maxCols = 0;
+                for (int i = 0; i < lineCount; i++)
+                {
+                    string line = lines[i] ?? "";
+                    int cols = FrameAnatomyInspector.GetDisplayWidth(line);
+                    if (cols > maxCols) maxCols = cols;
+
+                    int firstChar = rtb.GetFirstCharIndexFromLine(i);
+                    if (firstChar >= 0)
+                    {
+                        Point ptEnd = rtb.GetPositionFromCharIndex(firstChar + line.Length);
+                        if (ptEnd.X > maxLinePixelX) maxLinePixelX = ptEnd.X;
+                    }
+                }
+
+                int fontHeight = rtb.Font.Height;
+                int lastCharIdx = Math.Max(0, rtb.TextLength - 1);
+                Point ptBottom = rtb.GetPositionFromCharIndex(lastCharIdx);
+                int measuredContentHeight = Math.Max(lineCount * (fontHeight + 2), ptBottom.Y + fontHeight + 16);
+                int measuredContentWidth = Math.Max(maxCols * 8, maxLinePixelX + 20);
+
+                int padH = pnlBody.Padding.Left + pnlBody.Padding.Right + 24;
+                int padV = pnlBody.Padding.Top + pnlBody.Padding.Bottom + pnlBottom.Height + 24;
+
+                int maxAllowedClientW = (int)(workArea.Width * 0.90);
+                int maxAllowedClientH = (int)(workArea.Height * 0.90);
+
+                int targetClientW = Math.Max(780, Math.Min(measuredContentWidth + padH, maxAllowedClientW));
+                int targetClientH = Math.Max(420, Math.Min(measuredContentHeight + padV, maxAllowedClientH));
+
+                this.ClientSize = new Size(targetClientW, targetClientH);
+            }
+            catch
+            {
+                this.Size = new Size(820, 680);
+            }
+        }
+
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            try
+            {
+                Rectangle workArea = Screen.FromControl(this).WorkingArea;
+                int newX = this.Left;
+                int newY = this.Top;
+                if (this.Right > workArea.Right) newX = Math.Max(workArea.Left, workArea.Right - this.Width);
+                if (this.Bottom > workArea.Bottom) newY = Math.Max(workArea.Top, workArea.Bottom - this.Height);
+                if (newX < workArea.Left) newX = workArea.Left;
+                if (newY < workArea.Top) newY = workArea.Top;
+                this.Location = new Point(newX, newY);
+            }
+            catch { }
         }
     }
 
     public class MainForm : Form
     {
-        // ── Win32 API 锁定与双向防闪烁滚动 ──
+        private class TelemetryNumericUpDown : NumericUpDown
+        {
+            public override void UpButton()
+            {
+                if (this.ReadOnly) return;
+                base.UpButton();
+            }
+
+            public override void DownButton()
+            {
+                if (this.ReadOnly) return;
+                base.DownButton();
+            }
+
+            protected override void OnMouseWheel(MouseEventArgs e)
+            {
+                if (this.ReadOnly) return;
+                base.OnMouseWheel(e);
+            }
+        }
+
+        // ── Win32 API 锁定、热插拔监听与双向防闪烁滚动 ──
         [StructLayout(LayoutKind.Sequential)]
         private struct POINT
         {
@@ -289,6 +457,10 @@ namespace BMS_Protocol_Simulator
         private const int EM_GETSCROLLPOS = 0x04DD;
         private const int EM_SETSCROLLPOS = 0x04DE;
         private const int EM_GETLINECOUNT = 0x00BA;
+        private const int WM_DEVICECHANGE = 0x0219;
+        private const int DBT_DEVNODES_CHANGED = 0x0007;
+        private const int DBT_DEVICEARRIVAL = 0x8000;
+        private const int DBT_DEVICEREMOVECOMPLETE = 0x8004;
 
         private BmsDataModel _model;
         private SerialCommManager _comm;
@@ -298,6 +470,7 @@ namespace BMS_Protocol_Simulator
 
         // ── 顶部配置栏控件 ──
         private ComboBox cboPort;
+        private Button btnRefresh;
         private ComboBox cboBaud;
         private ComboBox cboProtocol;
         private ComboBox cboWorkMode;
@@ -356,6 +529,10 @@ namespace BMS_Protocol_Simulator
         // ── 智能机型与协议自适应识别 ──
         private CheckBox chkAutoAdapt;
 
+        private Font _flagFontRegular;
+        private Font _flagFontBold;
+        private Timer _deviceChangeTimer;
+
         private bool _isUpdatingUi = false;
         private bool _hasMasterTelemetryReceived = false;
 
@@ -364,6 +541,12 @@ namespace BMS_Protocol_Simulator
             this.KeyPreview = true;
             this.KeyDown += MainForm_KeyDown;
 
+            _flagFontRegular = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular);
+            _flagFontBold = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold);
+
+            _deviceChangeTimer = new Timer { Interval = 250 };
+            _deviceChangeTimer.Tick += DeviceChangeTimer_Tick;
+
             _model = new BmsDataModel();
             _comm = new SerialCommManager(_model);
             _comm.OnLogEvent += Comm_OnLogEvent;
@@ -371,9 +554,10 @@ namespace BMS_Protocol_Simulator
             _comm.OnMasterTelemetryUpdated += Comm_OnMasterTelemetryUpdated;
             _comm.OnScanPacksCompleted += Comm_OnScanPacksCompleted;
             _comm.OnAutoAdapted += Comm_OnAutoAdapted;
+            _comm.OnPortDisconnected += Comm_OnPortDisconnected;
 
             BuildUI();
-            RefreshPorts();
+            RefreshPorts(true);
             SyncModelToUI();
             UpdateWorkModeUI();
             UpdateProtocolControlStates();
@@ -448,8 +632,8 @@ namespace BMS_Protocol_Simulator
             cboPort = new ComboBox { Width = 75, DropDownStyle = ComboBoxStyle.DropDownList };
             flpTopRow1.Controls.Add(cboPort);
 
-            Button btnRefresh = new Button { Text = "刷新", Width = 44, Height = 25, Margin = new Padding(2, 2, 6, 0) };
-            btnRefresh.Click += delegate(object s, EventArgs e) { RefreshPorts(); };
+            btnRefresh = new Button { Text = "刷新", Width = 44, Height = 25, Margin = new Padding(2, 2, 6, 0) };
+            btnRefresh.Click += delegate(object s, EventArgs e) { RefreshPorts(true); };
             flpTopRow1.Controls.Add(btnRefresh);
 
             Label lblBaud = new Label { Text = "波特率:", AutoSize = true, Margin = new Padding(4, 6, 2, 0) };
@@ -469,7 +653,7 @@ namespace BMS_Protocol_Simulator
                 "GROWATT",
                 "VOLTRONIC",
                 "PYLONTECH",
-                "LIB_MODBUS",
+                "SHENGYANG",
                 "JBD"
             });
             cboProtocol.SelectedIndex = 0;
@@ -533,6 +717,7 @@ namespace BMS_Protocol_Simulator
                 {
                     _hasMasterTelemetryReceived = false;
                     ClearMasterTelemetryDisplay();
+                    _comm.NotifyContextReset();
                 }
             };
             flpTopRow2.Controls.Add(numSpecificId);
@@ -591,12 +776,23 @@ namespace BMS_Protocol_Simulator
 
             btnScanPacks = new Button { Text = "扫描从机", Width = 72, Height = 25, Margin = new Padding(4, 2, 6, 0), Visible = false };
             btnScanPacks.Click += delegate(object s, EventArgs e) {
+                if (_comm.IsRunning && !_comm.IsPhysicalPortOpen)
+                {
+                    _comm.NotifyExternalPortLost("检测到串口物理连接已断开");
+                    return;
+                }
                 if (!_comm.IsOpen) { MessageBox.Show("请先打开串口再执行扫描！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
                 btnScanPacks.Enabled = false;
-                using (ScanProgressDialog dlg = new ScanProgressDialog(_comm))
+                try
                 {
-                    _comm.StartScanOnlinePacks();
-                    dlg.ShowDialog(this);
+                    using (ScanProgressDialog dlg = new ScanProgressDialog(_comm))
+                    {
+                        dlg.ShowDialog(this);
+                    }
+                }
+                finally
+                {
+                    if (!btnScanPacks.IsDisposed) btnScanPacks.Enabled = true;
                 }
             };
             flpTopRow2.Controls.Add(btnScanPacks);
@@ -617,6 +813,7 @@ namespace BMS_Protocol_Simulator
                     case 4: _comm.PollIntervalMs = 2000; break;
                     case 5: _comm.PollIntervalMs = 0; break; // 手动单步
                 }
+                _comm.NotifyContextReset();
             };
             flpTopRow2.Controls.Add(cboPollInterval);
 
@@ -625,11 +822,17 @@ namespace BMS_Protocol_Simulator
                 _comm.IsPollingPaused = !_comm.IsPollingPaused;
                 btnPollPause.Text = _comm.IsPollingPaused ? "恢复轮询" : "暂停轮询";
                 lblStatusText.Text = _comm.IsPollingPaused ? "轮询已暂停" : "轮询已恢复运行";
+                if (!_comm.IsPollingPaused) _comm.NotifyContextReset();
             };
             flpTopRow2.Controls.Add(btnPollPause);
 
             btnSinglePoll = new Button { Text = "单步轮询", Width = 72, Height = 25, Margin = new Padding(2, 2, 6, 0), Visible = false };
             btnSinglePoll.Click += delegate(object s, EventArgs e) {
+                if (_comm.IsRunning && !_comm.IsPhysicalPortOpen)
+                {
+                    _comm.NotifyExternalPortLost("检测到串口物理连接已断开");
+                    return;
+                }
                 if (!_comm.IsOpen) { MessageBox.Show("请先打开串口再执行单步轮询！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
                 _comm.TriggerSinglePoll();
             };
@@ -866,7 +1069,7 @@ namespace BMS_Protocol_Simulator
 
         private NumericUpDown CreateBoundNumeric(int decimals, decimal min, decimal max, decimal increment, decimal initVal)
         {
-            NumericUpDown num = new NumericUpDown
+            TelemetryNumericUpDown num = new TelemetryNumericUpDown
             {
                 DecimalPlaces = decimals,
                 Minimum = min,
@@ -1098,8 +1301,20 @@ namespace BMS_Protocol_Simulator
                         lblStatusText.Text = string.Format("⛔ 非法输入: 数值 ({0}) 超出允许量程 [{1} ~ {2}]，已自动拦截回滚！", parsed, num.Minimum, num.Maximum);
                         return;
                     }
+
+                    string validationMsg;
+                    if (!ValidateNumeric(num, parsed, out validationMsg))
+                    {
+                        FlashControlColor(num, Color.FromArgb(254, 202, 202));
+                        RollbackNumeric(num);
+                        lblStatusText.Text = "⛔ " + validationMsg;
+                        return;
+                    }
+
                     _isUpdatingUi = true;
                     num.Value = parsed;
+                    tb.Text = (num.DecimalPlaces > 0) ? parsed.ToString("F" + num.DecimalPlaces) : parsed.ToString("F0");
+                    tb.SelectionLength = 0;
                     _isUpdatingUi = false;
                 }
                 else
@@ -1110,14 +1325,16 @@ namespace BMS_Protocol_Simulator
                     return;
                 }
             }
-
-            string validationMsg;
-            if (!ValidateNumeric(num, num.Value, out validationMsg))
+            else
             {
-                FlashControlColor(num, Color.FromArgb(254, 202, 202));
-                RollbackNumeric(num);
-                lblStatusText.Text = "⛔ " + validationMsg;
-                return;
+                string validationMsg;
+                if (!ValidateNumeric(num, num.Value, out validationMsg))
+                {
+                    FlashControlColor(num, Color.FromArgb(254, 202, 202));
+                    RollbackNumeric(num);
+                    lblStatusText.Text = "⛔ " + validationMsg;
+                    return;
+                }
             }
 
             _committedValues[num] = num.Value;
@@ -1230,6 +1447,25 @@ namespace BMS_Protocol_Simulator
             _flashTimers[ctrl].Interval = intervalMs;
             _flashTimers[ctrl].Stop();
             _flashTimers[ctrl].Start();
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (_currentFocusedControl != null && _committedValues.ContainsKey(_currentFocusedControl))
+            {
+                if (keyData == Keys.Enter || keyData == (Keys.Control | Keys.S))
+                {
+                    CommitSingleControl(_currentFocusedControl);
+                    return true;
+                }
+                if (keyData == Keys.Escape)
+                {
+                    RollbackNumeric(_currentFocusedControl);
+                    CancelAndRollbackCurrentEdit();
+                    return true;
+                }
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
         }
 
         private void MainForm_KeyDown(object sender, KeyEventArgs e)
@@ -1663,12 +1899,46 @@ namespace BMS_Protocol_Simulator
         // ══════════════════════════════════════════════════════════
         private void RefreshPorts()
         {
+            RefreshPorts(true);
+        }
+
+        private void RefreshPorts(bool preserveSelection)
+        {
+            if (_comm != null && _comm.IsRunning) return;
+
+            string prevSelected = (preserveSelection && cboPort.SelectedItem != null)
+                ? cboPort.SelectedItem.ToString()
+                : null;
+            if (string.Equals(prevSelected, "None", StringComparison.OrdinalIgnoreCase))
+                prevSelected = null;
+
             cboPort.Items.Clear();
             string[] ports = SerialPort.GetPortNames();
-            if (ports.Length > 0)
+            if (ports != null && ports.Length > 0)
             {
+                Array.Sort(ports, delegate(string a, string b)
+                {
+                    int na = 0, nb = 0;
+                    bool pa = a != null && a.StartsWith("COM", StringComparison.OrdinalIgnoreCase) && int.TryParse(a.Substring(3), out na);
+                    bool pb = b != null && b.StartsWith("COM", StringComparison.OrdinalIgnoreCase) && int.TryParse(b.Substring(3), out nb);
+                    if (pa && pb) return na.CompareTo(nb);
+                    return string.Compare(a, b, StringComparison.OrdinalIgnoreCase);
+                });
                 cboPort.Items.AddRange(ports);
-                cboPort.SelectedIndex = 0;
+
+                int matchIdx = 0;
+                if (!string.IsNullOrEmpty(prevSelected))
+                {
+                    for (int i = 0; i < cboPort.Items.Count; i++)
+                    {
+                        if (string.Equals(cboPort.Items[i].ToString(), prevSelected, StringComparison.OrdinalIgnoreCase))
+                        {
+                            matchIdx = i;
+                            break;
+                        }
+                    }
+                }
+                cboPort.SelectedIndex = matchIdx;
             }
             else
             {
@@ -1733,47 +2003,37 @@ namespace BMS_Protocol_Simulator
             _isUpdatingUi = false;
         }
 
+        private void ApplyFlagVisualStyle(CheckBox[] boxes, Color activeColor)
+        {
+            if (boxes == null) return;
+            Font regFont = _flagFontRegular ?? this.Font;
+            Font boldFont = _flagFontBold ?? this.Font;
+            for (int i = 0; i < boxes.Length; i++)
+            {
+                CheckBox chk = boxes[i];
+                if (chk == null) continue;
+                bool active = chk.Checked;
+                Color targetColor = active ? activeColor : SystemColors.ControlText;
+                Font targetFont = active ? boldFont : regFont;
+                if (chk.ForeColor != targetColor) chk.ForeColor = targetColor;
+                if (!object.ReferenceEquals(chk.Font, targetFont)) chk.Font = targetFont;
+            }
+        }
+
         private void UpdateAlarmProtectionVisualStyles()
         {
-            CheckBox[] statusChks = new CheckBox[] {
+            ApplyFlagVisualStyle(new CheckBox[] {
                 chkChgEn, chkDisEn, chkForceChg, chkFullChg, chkBalance, chkSleep
-            };
-            for (int i = 0; i < statusChks.Length; i++)
-            {
-                if (statusChks[i] != null)
-                {
-                    bool active = statusChks[i].Checked;
-                    statusChks[i].ForeColor = active ? Color.FromArgb(21, 128, 61) : SystemColors.ControlText;
-                    statusChks[i].Font = new Font("Microsoft YaHei UI", 9F, active ? FontStyle.Bold : FontStyle.Regular);
-                }
-            }
+            }, Color.FromArgb(21, 128, 61));
 
-            CheckBox[] warnChks = new CheckBox[] {
+            ApplyFlagVisualStyle(new CheckBox[] {
                 chkWarnSingleOv, chkWarnSingleUv, chkWarnGlobalOv, chkWarnGlobalUv,
                 chkWarnOc, chkWarnHt, chkWarnLt, chkWarnVoltDiff, chkWarnLowCap
-            };
-            for (int i = 0; i < warnChks.Length; i++)
-            {
-                if (warnChks[i] != null)
-                {
-                    bool active = warnChks[i].Checked;
-                    warnChks[i].ForeColor = active ? Color.FromArgb(180, 83, 9) : SystemColors.ControlText;
-                    warnChks[i].Font = new Font("Microsoft YaHei UI", 9F, active ? FontStyle.Bold : FontStyle.Regular);
-                }
-            }
+            }, Color.FromArgb(180, 83, 9));
 
-            CheckBox[] protChks = new CheckBox[] {
+            ApplyFlagVisualStyle(new CheckBox[] {
                 chkProtOv, chkProtUv, chkProtOc, chkProtSc, chkProtHt, chkProtLt, chkProtSys, chkProtSoftStart
-            };
-            for (int i = 0; i < protChks.Length; i++)
-            {
-                if (protChks[i] != null)
-                {
-                    bool active = protChks[i].Checked;
-                    protChks[i].ForeColor = active ? Color.FromArgb(185, 28, 28) : SystemColors.ControlText;
-                    protChks[i].Font = new Font("Microsoft YaHei UI", 9F, active ? FontStyle.Bold : FontStyle.Regular);
-                }
-            }
+            }, Color.FromArgb(185, 28, 28));
         }
 
         // 根据当前选定的协议直接置灰当前协议不支持的模拟量与标志位控件 (仅在从机模拟模式下禁用，主机模式下保持启用只读回显)
@@ -1781,7 +2041,7 @@ namespace BMS_Protocol_Simulator
         {
             bool isMaster = (_comm != null && _comm.CurrentWorkMode == WorkMode.MasterPoller);
             int idx = (cboProtocol != null && cboProtocol.SelectedIndex >= 0) ? cboProtocol.SelectedIndex : 0;
-            // idx: 0=CVTE, 1=GROWATT, 2=VOLTRONIC, 3=PYLONTECH, 4=LIB_MODBUS, 5=JBD
+            // idx: 0=CVTE, 1=GROWATT, 2=VOLTRONIC, 3=PYLONTECH, 4=SHENGYANG, 5=JBD
 
             if (isMaster)
             {
@@ -1875,6 +2135,10 @@ namespace BMS_Protocol_Simulator
             _comm.CurrentWorkMode = isMaster ? WorkMode.MasterPoller : WorkMode.SlaveSimulator;
             _comm.TargetSlaveId = (byte)numSpecificId.Value;
             _comm.SpecificId = (int)numSpecificId.Value;
+            if (wasMaster != isMaster)
+            {
+                _comm.NotifyContextReset();
+            }
 
             if (isMaster)
             {
@@ -1988,6 +2252,10 @@ namespace BMS_Protocol_Simulator
             {
                 if (this.IsDisposed) return;
                 btnScanPacks.Enabled = true;
+                if (_comm != null && _comm.WasScanAbortedByDisconnect)
+                {
+                    return;
+                }
                 if (_comm != null && _comm.WasScanCancelled)
                 {
                     lblStatusText.Text = "扫描已由用户手动取消";
@@ -2046,22 +2314,35 @@ namespace BMS_Protocol_Simulator
                     _hasMasterTelemetryReceived = false;
                     ClearMasterTelemetryDisplay();
                 }
+                _comm.NotifyContextReset();
             }
             UpdateProtocolControlStates();
             UpdateProtocolBadge();
         }
 
+        private void SetConnectionUiState(bool connected, string statusMsg)
+        {
+            btnConnect.Text = connected ? "关闭串口" : "打开串口";
+            lblPortStatus.Text = connected ? "● 运行中" : "未连接";
+            lblPortStatus.ForeColor = connected ? Color.Green : Color.Gray;
+            cboPort.Enabled = !connected;
+            cboBaud.Enabled = !connected;
+            if (btnRefresh != null) btnRefresh.Enabled = !connected;
+            if (!string.IsNullOrEmpty(statusMsg))
+            {
+                lblStatusText.Text = statusMsg;
+            }
+        }
+
         private void BtnConnect_Click(object sender, EventArgs e)
         {
-            if (_comm.IsOpen)
+            if (_comm.IsRunning || btnConnect.Text == "关闭串口")
             {
                 _comm.Close();
-                btnConnect.Text = "打开串口";
-                lblPortStatus.Text = "未连接";
-                lblPortStatus.ForeColor = Color.Gray;
-                cboPort.Enabled = true;
-                cboBaud.Enabled = true;
-                lblStatusText.Text = _comm.CurrentWorkMode == WorkMode.MasterPoller ? "串口已关闭，主机轮询已停止" : "串口已关闭，从机模拟已停止";
+                RefreshPorts(true);
+                SetConnectionUiState(false, _comm.CurrentWorkMode == WorkMode.MasterPoller
+                    ? "串口已关闭，主机轮询已停止"
+                    : "串口已关闭，从机模拟已停止");
             }
             else
             {
@@ -2072,25 +2353,96 @@ namespace BMS_Protocol_Simulator
                 }
 
                 string portName = cboPort.SelectedItem.ToString();
-                int baud = int.Parse(cboBaud.SelectedItem.ToString());
+                int baud = 9600;
+                if (cboBaud.SelectedItem == null || !int.TryParse(cboBaud.SelectedItem.ToString(), out baud))
+                {
+                    baud = 9600;
+                }
 
                 if (_comm.Open(portName, baud))
                 {
-                    btnConnect.Text = "关闭串口";
-                    lblPortStatus.Text = "● 运行中";
-                    lblPortStatus.ForeColor = Color.Green;
-                    cboPort.Enabled = false;
-                    cboBaud.Enabled = false;
+                    string runningMsg = _comm.CurrentWorkMode == WorkMode.MasterPoller
+                        ? string.Format("✓ 串口已打开 [{0}: {1}]，主机轮询模式运行中，正在采集从机 ID:{2} 遥测数据...", portName, baud, _comm.TargetSlaveId)
+                        : string.Format("✓ 串口已打开 [{0}: {1}]，正在监听总线，等待外部逆变器查询...", portName, baud);
+                    SetConnectionUiState(true, runningMsg);
+                }
+                else
+                {
+                    RefreshPorts(true);
+                    SetConnectionUiState(false, null);
+                }
+            }
+        }
 
-                    if (_comm.CurrentWorkMode == WorkMode.MasterPoller)
+        private void Comm_OnPortDisconnected(object sender, PortDisconnectedEventArgs e)
+        {
+            if (this.IsDisposed || !this.IsHandleCreated) return;
+            this.BeginInvoke(new Action(delegate()
+            {
+                if (this.IsDisposed || _comm.IsRunning) return;
+                RefreshPorts(true);
+                SetConnectionUiState(false, "⚠️ " + e.Reason + "（已自动关闭串口）");
+                AppendSystemNoticeToLog("⚠️ [链路断开] " + e.Reason + "，已自动关闭串口并恢复就绪状态。");
+            }));
+        }
+
+        private void AppendSystemNoticeToLog(string notice)
+        {
+            if (rtbLog == null || rtbLog.IsDisposed || !rtbLog.IsHandleCreated) return;
+            string line = string.Format("[{0:HH:mm:ss}] SYS: {1}{2}", DateTime.Now, notice, Environment.NewLine);
+            rtbLog.SelectionStart = rtbLog.TextLength;
+            rtbLog.SelectionLength = 0;
+            rtbLog.SelectionColor = Color.FromArgb(248, 113, 113);
+            rtbLog.AppendText(line);
+            if (chkAutoScroll != null && chkAutoScroll.Checked)
+            {
+                rtbLog.ScrollToCaret();
+            }
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            base.WndProc(ref m);
+            if (m.Msg == WM_DEVICECHANGE && _deviceChangeTimer != null)
+            {
+                int wp = (int)(m.WParam.ToInt64() & 0xFFFF);
+                if (wp == DBT_DEVNODES_CHANGED || wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE)
+                {
+                    _deviceChangeTimer.Stop();
+                    _deviceChangeTimer.Start();
+                }
+            }
+        }
+
+        private void DeviceChangeTimer_Tick(object sender, EventArgs e)
+        {
+            if (_deviceChangeTimer != null) _deviceChangeTimer.Stop();
+            if (this.IsDisposed) return;
+
+            if (_comm != null && _comm.IsRunning)
+            {
+                string activePort = _comm.CurrentPortName;
+                bool stillPresent = false;
+                if (!string.IsNullOrEmpty(activePort))
+                {
+                    string[] currentPorts = SerialPort.GetPortNames();
+                    for (int i = 0; i < currentPorts.Length; i++)
                     {
-                        lblStatusText.Text = string.Format("✓ 串口已打开 [{0}: {1}]，主机轮询模式运行中，正在采集从机 ID:{2} 遥测数据...", portName, baud, _comm.TargetSlaveId);
-                    }
-                    else
-                    {
-                        lblStatusText.Text = string.Format("✓ 串口已打开 [{0}: {1}]，正在监听总线，等待外部逆变器查询...", portName, baud);
+                        if (string.Equals(currentPorts[i], activePort, StringComparison.OrdinalIgnoreCase))
+                        {
+                            stillPresent = true;
+                            break;
+                        }
                     }
                 }
+                if (!stillPresent || !_comm.IsPhysicalPortOpen)
+                {
+                    _comm.NotifyExternalPortLost(string.Format("串口 {0} 已拔出或发生变化", activePort ?? ""));
+                }
+            }
+            else
+            {
+                RefreshPorts(true);
             }
         }
 
@@ -2099,9 +2451,9 @@ namespace BMS_Protocol_Simulator
             if (this.IsDisposed || !this.IsHandleCreated) return;
             this.BeginInvoke(new Action(delegate()
             {
-                if (this.IsDisposed) return;
+                if (this.IsDisposed || _comm.CurrentWorkMode != WorkMode.SlaveSimulator) return;
 
-                string targetProtName = e.Protocol == DetectedProtocolType.LibModbus ? "LIB_MODBUS" : (e.Protocol == DetectedProtocolType.Jbd ? "JBD" : e.Protocol.ToString().ToUpper());
+                string targetProtName = e.Protocol == DetectedProtocolType.LibModbus ? "SHENGYANG" : (e.Protocol == DetectedProtocolType.Jbd ? "JBD" : e.Protocol.ToString().ToUpper());
                 for (int i = 0; i < cboProtocol.Items.Count; i++)
                 {
                     if (cboProtocol.Items[i].ToString().Equals(targetProtName, StringComparison.OrdinalIgnoreCase))
@@ -2278,22 +2630,22 @@ namespace BMS_Protocol_Simulator
                     }
                 }
 
-                // 5000 行上限截断保护 (Win32 O(1) 免 GC 查询，防止长期自动化测试 OOM)
-                int lineCount = (int)SendMessage(rtbLog.Handle, EM_GETLINECOUNT, IntPtr.Zero, IntPtr.Zero);
-                if (lineCount > 5000)
-                {
-                    int cutCharIndex = rtbLog.GetFirstCharIndexFromLine(1000);
-                    if (cutCharIndex > 0)
-                    {
-                        rtbLog.Select(0, cutCharIndex);
-                        rtbLog.SelectedText = string.Empty;
-                    }
-                }
-
                 bool autoScroll = chkAutoScroll.Checked;
 
                 if (autoScroll)
                 {
+                    // 5000 行上限截断保护 (Win32 O(1) 免 GC 查询，防止长期自动化测试 OOM)
+                    int lineCount = (int)SendMessage(rtbLog.Handle, EM_GETLINECOUNT, IntPtr.Zero, IntPtr.Zero);
+                    if (lineCount > 5000)
+                    {
+                        int cutCharIndex = rtbLog.GetFirstCharIndexFromLine(1000);
+                        if (cutCharIndex > 0)
+                        {
+                            rtbLog.Select(0, cutCharIndex);
+                            rtbLog.SelectedText = string.Empty;
+                        }
+                    }
+
                     rtbLog.SelectionStart = rtbLog.TextLength;
                     rtbLog.SelectionLength = 0;
                     rtbLog.SelectionColor = textColor;
@@ -2310,6 +2662,18 @@ namespace BMS_Protocol_Simulator
                         SendMessage(rtbLog.Handle, EM_GETSCROLLPOS, IntPtr.Zero, ref scrollPos);
                         int selStart = rtbLog.SelectionStart;
                         int selLen = rtbLog.SelectionLength;
+
+                        int lineCount = (int)SendMessage(rtbLog.Handle, EM_GETLINECOUNT, IntPtr.Zero, IntPtr.Zero);
+                        if (lineCount > 5000)
+                        {
+                            int cutCharIndex = rtbLog.GetFirstCharIndexFromLine(1000);
+                            if (cutCharIndex > 0)
+                            {
+                                rtbLog.Select(0, cutCharIndex);
+                                rtbLog.SelectedText = string.Empty;
+                                selStart = Math.Max(0, selStart - cutCharIndex);
+                            }
+                        }
 
                         rtbLog.SelectionStart = rtbLog.TextLength;
                         rtbLog.SelectionLength = 0;
@@ -2373,8 +2737,15 @@ namespace BMS_Protocol_Simulator
                 sfd.FileName = string.Format("BMS_Log_{0:yyyyMMdd_HHmmss}.txt", DateTime.Now);
                 if (sfd.ShowDialog() == DialogResult.OK)
                 {
-                    File.WriteAllText(sfd.FileName, rtbLog.Text, new UTF8Encoding(true));
-                    MessageBox.Show("日志已成功保存！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    try
+                    {
+                        File.WriteAllText(sfd.FileName, rtbLog.Text, new UTF8Encoding(true));
+                        MessageBox.Show("日志已成功保存！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show("保存日志失败:\n" + ex.Message, "导出失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
                 }
             }
         }
@@ -2412,6 +2783,17 @@ namespace BMS_Protocol_Simulator
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            if (_deviceChangeTimer != null)
+            {
+                try
+                {
+                    _deviceChangeTimer.Stop();
+                    _deviceChangeTimer.Dispose();
+                }
+                catch { }
+                _deviceChangeTimer = null;
+            }
+
             if (_flashTimers != null)
             {
                 foreach (Timer tmr in _flashTimers.Values)
@@ -2431,7 +2813,24 @@ namespace BMS_Protocol_Simulator
 
             if (_comm != null)
             {
+                _comm.OnLogEvent -= Comm_OnLogEvent;
+                _comm.OnStatusChanged -= Comm_OnStatusChanged;
+                _comm.OnMasterTelemetryUpdated -= Comm_OnMasterTelemetryUpdated;
+                _comm.OnScanPacksCompleted -= Comm_OnScanPacksCompleted;
+                _comm.OnAutoAdapted -= Comm_OnAutoAdapted;
+                _comm.OnPortDisconnected -= Comm_OnPortDisconnected;
                 _comm.Close();
+            }
+
+            if (_flagFontRegular != null)
+            {
+                _flagFontRegular.Dispose();
+                _flagFontRegular = null;
+            }
+            if (_flagFontBold != null)
+            {
+                _flagFontBold.Dispose();
+                _flagFontBold = null;
             }
 
             base.OnFormClosing(e);

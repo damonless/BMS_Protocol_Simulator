@@ -2037,7 +2037,7 @@ namespace BMS_Protocol_Simulator
     {
         public string ProtocolName
         {
-            get { return "LIB_MODBUS (RS485 V1.30)"; }
+            get { return "SHENGYANG (RS485 V1.30)"; }
         }
 
         public bool TryProcessQuery(byte[] rxBuffer, int rxLength, BmsDataModel model, bool replyAllIds, int specificId, out byte[] txResponse, out string decodedInfo)
@@ -2085,7 +2085,7 @@ namespace BMS_Protocol_Simulator
                 resp[44] = (byte)(crc & 0xFF);
 
                 txResponse = resp;
-                decodedInfo = string.Format("[LIB_MODBUS] 应答 ID:{0:X2} 读产品信息 (0x11) -> P16S50A-6232, SW:V1.00, HW:V1.20, SN:20161111011800400026", id);
+                decodedInfo = string.Format("[SHENGYANG] 应答 ID:{0:X2} 读产品信息 (0x11) -> P16S50A-6232, SW:V1.00, HW:V1.20, SN:20161111011800400026", id);
                 return true;
             }
 
@@ -2104,7 +2104,7 @@ namespace BMS_Protocol_Simulator
                 if (regCount == 0 || regStart < 0x1000 || (regStart + regCount - 1) > 0x1016)
                 {
                     txResponse = BuildExceptionFrame(id, cmd, 0x02);
-                    decodedInfo = string.Format("[LIB_MODBUS] 异常应答 ID:{0:X2} 读 0x{1:X4} (数量:{2}) -> 错误码:0x02 (非法寄存器地址)", id, regStart, regCount);
+                    decodedInfo = string.Format("[SHENGYANG] 异常应答 ID:{0:X2} 读 0x{1:X4} (数量:{2}) -> 错误码:0x02 (非法寄存器地址)", id, regStart, regCount);
                     return true;
                 }
 
@@ -2128,7 +2128,7 @@ namespace BMS_Protocol_Simulator
                     if (model.HasProtection) statusTag += string.Format(" [保护跳闸: {0}]", model.GetActiveProtectionsSummary());
                     if (model.HasWarning) statusTag += string.Format(" [告警提示: {0}]", model.GetActiveWarningsSummary());
 
-                    decodedInfo = string.Format("[LIB_MODBUS] 应答 ID:{0:X2} 读 0x{1:X4} ({2}寄存器) -> 电压:{3:F2}V, SOC:{4:F0}%, 电流:{5:F2}A, 温度:{6:F1}°C{7}",
+                    decodedInfo = string.Format("[SHENGYANG] 应答 ID:{0:X2} 读 0x{1:X4} ({2}寄存器) -> 电压:{3:F2}V, SOC:{4:F0}%, 电流:{5:F2}A, 温度:{6:F1}°C{7}",
                         id, regStart, regCount, model.Voltage, model.SOC, model.Current, model.Temperature, statusTag);
                 }
 
@@ -2141,10 +2141,14 @@ namespace BMS_Protocol_Simulator
             }
 
             // 情况 C: 其它功能码 (当 LibModbusHandler 激活且收到合法 CRC 帧时，返回 0x01 非法功能码异常)
-            if (!replyAllIds && id != specificId) return false;
+            if (!replyAllIds && id != specificId)
+            {
+                decodedInfo = string.Format("收到对 ID:{0:X2} 的查询 (已按单包规则忽略)", id);
+                return false;
+            }
 
             txResponse = BuildExceptionFrame(id, cmd, 0x01);
-            decodedInfo = string.Format("[LIB_MODBUS] 异常应答 ID:{0:X2} 功能码 0x{1:X2} -> 错误码:0x01 (非法功能码)", id, cmd);
+            decodedInfo = string.Format("[SHENGYANG] 异常应答 ID:{0:X2} 功能码 0x{1:X2} -> 错误码:0x01 (非法功能码)", id, cmd);
             return true;
         }
 
@@ -2315,7 +2319,7 @@ namespace BMS_Protocol_Simulator
             if (fc == 0x84 || fc == 0x91)
             {
                 byte errCode = rxBuffer[2];
-                decodedInfo = string.Format("[LIB_MODBUS] 从机异常响应 ID:{0:X2}, 功能码:0x{1:X2}, 错误码:0x{2:X2} ({3})",
+                decodedInfo = string.Format("[SHENGYANG] 从机异常响应 ID:{0:X2}, 功能码:0x{1:X2}, 错误码:0x{2:X2} ({3})",
                     id, fc, errCode, errCode == 0x01 ? "非法功能码" : (errCode == 0x02 ? "非法寄存器地址" : "从机异常"));
                 return true;
             }
@@ -2333,7 +2337,7 @@ namespace BMS_Protocol_Simulator
                 byte hwMin = rxBuffer[20];
                 string snStr = Encoding.ASCII.GetString(rxBuffer, 22, 20).TrimEnd('\0', ' ');
 
-                decodedInfo = string.Format("[LIB_MODBUS] 接收从机产品信息 ID:{0:X2}: 型号={1}, 固件=V{2:X}.{3:X2}, 硬件=V{4:X}.{5:X2}, 序列号={6}",
+                decodedInfo = string.Format("[SHENGYANG] 接收从机产品信息 ID:{0:X2}: 型号={1}, 固件=V{2:X}.{3:X2}, 硬件=V{4:X}.{5:X2}, 序列号={6}",
                     id, modelStr, swMaj, swMin, hwMaj, hwMin, snStr);
                 return true;
             }
@@ -2430,7 +2434,7 @@ namespace BMS_Protocol_Simulator
                     }
                 }
 
-                decodedInfo = string.Format("[LIB_MODBUS] 成功解析 0x04 应答: 电压={0:F2}V, 电流={1:F2}A, SOC={2:F1}%, 温度={3:F1}°C, 满充容量={4:F2}Ah",
+                decodedInfo = string.Format("[SHENGYANG] 成功解析 0x04 应答: 电压={0:F2}V, 电流={1:F2}A, SOC={2:F1}%, 温度={3:F1}°C, 满充容量={4:F2}Ah",
                     model.Voltage, model.Current, model.SOC, model.Temperature, model.FullCapacity);
                 return true;
             }
@@ -3183,7 +3187,7 @@ namespace BMS_Protocol_Simulator
                 return res;
             }
 
-            // 0. LIB_MODBUS 特征帧校验 (8 字节 0x04 读输入寄存器 或 4 字节 0x11 读产品信息)
+            // 0. SHENGYANG 特征帧校验 (8 字节 0x04 读输入寄存器 或 4 字节 0x11 读产品信息)
             if (length >= 8 && buffer[offset + 1] == 0x04 && ModbusCrc.Check(buffer, 8, offset))
             {
                 byte slaveId = buffer[offset];
@@ -3195,7 +3199,7 @@ namespace BMS_Protocol_Simulator
                     DetectionResult res = new DetectionResult();
                     res.SlaveId = slaveId;
                     res.Timestamp = DateTime.Now;
-                    res.RawSignature = string.Format("LIB_MODBUS 0x04 读输入寄存器: 从机 ID={0}, 起始=0x{1:X4}, 长度={2}", slaveId, startReg, regCount);
+                    res.RawSignature = string.Format("SHENGYANG 0x04 读输入寄存器: 从机 ID={0}, 起始=0x{1:X4}, 长度={2}", slaveId, startReg, regCount);
                     res.Protocol = DetectedProtocolType.LibModbus;
                     res.Model = InverterModel.Unknown;
                     res.IsSignatureConfirmed = true;
@@ -3209,7 +3213,7 @@ namespace BMS_Protocol_Simulator
                 DetectionResult res = new DetectionResult();
                 res.SlaveId = slaveId;
                 res.Timestamp = DateTime.Now;
-                res.RawSignature = string.Format("LIB_MODBUS 0x11 读产品信息: 从机 ID={0}", slaveId);
+                res.RawSignature = string.Format("SHENGYANG 0x11 读产品信息: 从机 ID={0}", slaveId);
                 res.Protocol = DetectedProtocolType.LibModbus;
                 res.Model = InverterModel.Unknown;
                 res.IsSignatureConfirmed = true;
@@ -3437,26 +3441,28 @@ namespace BMS_Protocol_Simulator
             }
 
             StringBuilder sb = new StringBuilder();
-            sb.AppendLine("══════════════════════════════════════════════════════════════");
+            sb.AppendLine("══════════════════════════════════════════════════════════════════════════════════════");
             sb.AppendLine("  BMS 协议帧深度解剖报告 (Frame Anatomy Inspector)");
-            sb.AppendLine("══════════════════════════════════════════════════════════════");
+            sb.AppendLine("══════════════════════════════════════════════════════════════════════════════════════");
             sb.AppendLine(string.Format("• 传输方向 : {0}", direction));
             sb.AppendLine(string.Format("• 当前协议 : {0}", currentProtocolName ?? "未知"));
             sb.AppendLine(string.Format("• 字节长度 : {0} Bytes", bytes.Count));
             if (!string.IsNullOrEmpty(summaryPart))
-                sb.AppendLine(string.Format("• 业务摘要 : {0}", summaryPart));
+            {
+                AppendWrappedSummary(sb, "• 业务摘要 : ", summaryPart, 82);
+            }
 
             if (bytes.Count == 0)
             {
                 sb.AppendLine();
                 sb.AppendLine("⚠️ 当前日志行未包含可解析的十六进制字节流（请勾选【显示HEX】后捕获报文）。");
                 sb.AppendLine("原始文本: " + trimmed);
-                return sb.ToString();
+                return sb.ToString().TrimEnd('\r', '\n');
             }
 
             byte[] raw = bytes.ToArray();
-            sb.AppendLine(string.Format("• 原始 HEX : {0}", BitConverter.ToString(raw).Replace("-", " ")));
-            sb.AppendLine("──────────────────────────────────────────────────────────────");
+            AppendFormattedHexBlock(sb, "• 原始 HEX : ", raw);
+            sb.AppendLine("──────────────────────────────────────────────────────────────────────────────────────");
 
             // 1. Pylontech ASCII 帧解剖
             if (raw[0] == 0x7E)
@@ -3466,7 +3472,7 @@ namespace BMS_Protocol_Simulator
                 ushort calcChk = raw.Length >= 6 ? PylonChecksum.Calculate(raw, 1, raw.Length - 6) : (ushort)0;
 
                 sb.AppendLine("[协议帧类型] : Pylontech RS485 ASCII 协议帧");
-                sb.AppendLine(string.Format("[ASCII 文本] : {0}\\r", ascii));
+                AppendWrappedSummary(sb, "[ASCII 文本] : ", ascii + "\\r", 74);
                 sb.AppendLine(string.Format("[校验码状态] : {0} (计算值: 0x{1:X4})", chkOk ? "✓ 校验通过 (PASS)" : "✕ 校验错误 (FAIL)", calcChk));
                 sb.AppendLine();
                 if (ascii.Length >= 17)
@@ -3480,23 +3486,27 @@ namespace BMS_Protocol_Simulator
                     string infoStr = infoHexLen > 0 ? ascii.Substring(13, infoHexLen) : "(空)";
                     string chkStr = ascii.Substring(ascii.Length - 4, 4);
 
-                    sb.AppendLine("┌──────────┬──────────┬────────────────────────────────────────┐");
-                    sb.AppendLine("│ 字段名称 │ 报文内容 │ 物理意义与规范解析                     │");
-                    sb.AppendLine("├──────────┼──────────┼────────────────────────────────────────┤");
-                    sb.AppendLine(string.Format("│ SOI      │ 0x7E (~) │ 起始标志位                             │"));
-                    sb.AppendLine(string.Format("│ VER      │ {0,-8} │ 协议版本号 (V{0})                       │", ver));
-                    sb.AppendLine(string.Format("│ ADR      │ 0x{0,-6} │ 电池包通信地址                         │", adr));
-                    sb.AppendLine(string.Format("│ CID1     │ 0x{0,-6} │ 设备类型码 (46H=磷酸铁锂电池)          │", cid1));
-                    sb.AppendLine(string.Format("│ CID2/RTN │ 0x{0,-6} │ {1,-38} │", cid2, GetPylonCid2Description(cid2)));
-                    sb.AppendLine(string.Format("│ LENGTH   │ 0x{0,-6} │ INFO 长度字段 ({1} HEX字符)             │", lenField, infoHexLen));
-                    sb.AppendLine(string.Format("│ CHKSUM   │ 0x{0,-6} │ 帧校验和 ({1})                         │", chkStr, chkOk ? "合法" : "异常"));
-                    sb.AppendLine(string.Format("│ EOI      │ 0x0D(\\r) │ 结束标志位 (CR)                        │"));
-                    sb.AppendLine("└──────────┴──────────┴────────────────────────────────────────┘");
+                    sb.AppendLine("┌──────────┬──────────┬────────────────────────────────────────────┐");
+                    sb.AppendLine("│ " + PadRightDisplay("字段名称", 8) + " │ " + PadRightDisplay("报文内容", 8) + " │ " + PadRightDisplay("物理意义与规范解析", 42) + " │");
+                    sb.AppendLine("├──────────┼──────────┼────────────────────────────────────────────┤");
+                    sb.AppendLine("│ " + PadRightDisplay("SOI", 8) + " │ " + PadRightDisplay("0x7E (~)", 8) + " │ " + PadRightDisplay("起始标志位", 42) + " │");
+                    sb.AppendLine("│ " + PadRightDisplay("VER", 8) + " │ " + PadRightDisplay(ver, 8) + " │ " + PadRightDisplay(string.Format("协议版本号 (V{0})", ver), 42) + " │");
+                    sb.AppendLine("│ " + PadRightDisplay("ADR", 8) + " │ " + PadRightDisplay("0x" + adr, 8) + " │ " + PadRightDisplay("电池包通信地址", 42) + " │");
+                    sb.AppendLine("│ " + PadRightDisplay("CID1", 8) + " │ " + PadRightDisplay("0x" + cid1, 8) + " │ " + PadRightDisplay("设备类型码 (46H=磷酸铁锂电池)", 42) + " │");
+                    sb.AppendLine("│ " + PadRightDisplay("CID2/RTN", 8) + " │ " + PadRightDisplay("0x" + cid2, 8) + " │ " + PadRightDisplay(GetPylonCid2Description(cid2), 42) + " │");
+                    sb.AppendLine("│ " + PadRightDisplay("LENGTH", 8) + " │ " + PadRightDisplay("0x" + lenField, 8) + " │ " + PadRightDisplay(string.Format("INFO 长度字段 ({0} HEX字符)", infoHexLen), 42) + " │");
+                    sb.AppendLine("│ " + PadRightDisplay("CHKSUM", 8) + " │ " + PadRightDisplay("0x" + chkStr, 8) + " │ " + PadRightDisplay(string.Format("帧校验和 ({0})", chkOk ? "合法" : "异常"), 42) + " │");
+                    sb.AppendLine("│ " + PadRightDisplay("EOI", 8) + " │ " + PadRightDisplay("0x0D(\\r)", 8) + " │ " + PadRightDisplay("结束标志位 (CR)", 42) + " │");
+                    sb.AppendLine("└──────────┴──────────┴────────────────────────────────────────────┘");
                     sb.AppendLine();
                     sb.AppendLine("[INFO 数据域载荷]:");
-                    sb.AppendLine("  " + infoStr);
+                    for (int k = 0; k < infoStr.Length; k += 64)
+                    {
+                        int chunk = Math.Min(64, infoStr.Length - k);
+                        sb.AppendLine("  " + infoStr.Substring(k, chunk));
+                    }
                 }
-                return sb.ToString();
+                return sb.ToString().TrimEnd('\r', '\n');
             }
 
             // 2. JBD (RS485/UART V12) 帧解剖 (0xDD 开头)
@@ -3523,30 +3533,30 @@ namespace BMS_Protocol_Simulator
                         chkOk ? "✓ 校验通过 (PASS)" : "✕ 校验错误 (FAIL)", frameChk, calcChk));
                     sb.AppendLine();
 
-                    sb.AppendLine("┌──────────┬──────────┬────────────────────────────────────────┐");
-                    sb.AppendLine("│ 字段名称 │ 报文内容 │ 物理意义与规范解析                     │");
-                    sb.AppendLine("├──────────┼──────────┼────────────────────────────────────────┤");
-                    sb.AppendLine("│ SOI      │ 0xDD     │ 起始标志位 (Start of Frame)            │");
-                    sb.AppendLine(string.Format("│ R/W 标志 │ 0x{0:X2}     │ {1,-38} │", rw, rw == 0xA5 ? "0xA5 (读数据/状态)" : (rw == 0x5A ? "0x5A (写控制/参数)" : "未知读写标志")));
-                    sb.AppendLine(string.Format("│ 命令码CMD│ 0x{0:X2}     │ {1,-38} │", cmd, GetJbdCmdDescription(cmd, rw)));
-                    sb.AppendLine(string.Format("│ 数据长度 │ 0x{0:X2} ({0}) │ 请求载荷长度 ({0} 字节)                 │", dLen));
-                    sb.AppendLine(string.Format("│ 校验和   │ 0x{0:X4}   │ CMD+LEN+DATA 累加和按位取反加1         │", frameChk));
-                    sb.AppendLine("│ EOI      │ 0x77     │ 结束标志位 (End of Frame)              │");
+                    sb.AppendLine("┌──────────┬──────────┬────────────────────────────────────────────┐");
+                    sb.AppendLine("│ " + PadRightDisplay("字段名称", 8) + " │ " + PadRightDisplay("报文内容", 8) + " │ " + PadRightDisplay("物理意义与规范解析", 42) + " │");
+                    sb.AppendLine("├──────────┼──────────┼────────────────────────────────────────────┤");
+                    sb.AppendLine("│ " + PadRightDisplay("SOI", 8) + " │ " + PadRightDisplay("0xDD", 8) + " │ " + PadRightDisplay("起始标志位 (Start of Frame)", 42) + " │");
+                    sb.AppendLine("│ " + PadRightDisplay("R/W 标志", 8) + " │ " + PadRightDisplay(string.Format("0x{0:X2}", rw), 8) + " │ " + PadRightDisplay(rw == 0xA5 ? "0xA5 (读数据/状态)" : (rw == 0x5A ? "0x5A (写控制/参数)" : "未知读写标志"), 42) + " │");
+                    sb.AppendLine("│ " + PadRightDisplay("命令码", 8) + " │ " + PadRightDisplay(string.Format("0x{0:X2}", cmd), 8) + " │ " + PadRightDisplay(GetJbdCmdDescription(cmd, rw), 42) + " │");
+                    sb.AppendLine("│ " + PadRightDisplay("数据长度", 8) + " │ " + PadRightDisplay(string.Format("0x{0:X2}({0})", dLen), 8) + " │ " + PadRightDisplay(string.Format("请求载荷长度 ({0} 字节)", dLen), 42) + " │");
+                    sb.AppendLine("│ " + PadRightDisplay("校验和", 8) + " │ " + PadRightDisplay(string.Format("0x{0:X4}", frameChk), 8) + " │ " + PadRightDisplay("CMD+LEN+DATA 累加和按位取反加1", 42) + " │");
+                    sb.AppendLine("│ " + PadRightDisplay("EOI", 8) + " │ " + PadRightDisplay("0x77", 8) + " │ " + PadRightDisplay("结束标志位 (End of Frame)", 42) + " │");
                     int actualCbLen = Math.Max(0, raw.Length - (7 + dLen));
                     if (actualCbLen > 0)
                     {
                         byte[] cbBytes = new byte[actualCbLen];
                         Array.Copy(raw, 7 + dLen, cbBytes, 0, actualCbLen);
-                        sb.AppendLine(string.Format("│ CALLBACK │ {0,-8} │ 尾随透传 ID ({1} 字节, 从机将原样附带回传)│", BitConverter.ToString(cbBytes).Replace("-", " "), actualCbLen));
+                        sb.AppendLine("│ " + PadRightDisplay("CALLBACK", 8) + " │ " + PadRightDisplay(BitConverter.ToString(cbBytes).Replace("-", " "), 8) + " │ " + PadRightDisplay(string.Format("尾随透传 ID ({0} 字节, 从机原样附带回传)", actualCbLen), 42) + " │");
                     }
-                    sb.AppendLine("└──────────┴──────────┴────────────────────────────────────────┘");
+                    sb.AppendLine("└──────────┴──────────┴────────────────────────────────────────────┘");
 
                     if (dLen > 0 && raw.Length >= 4 + dLen)
                     {
                         sb.AppendLine();
                         sb.AppendLine(string.Format("[载荷数据 HEX]: {0}", BitConverter.ToString(raw, 4, dLen).Replace("-", " ")));
                     }
-                    return sb.ToString();
+                    return sb.ToString().TrimEnd('\r', '\n');
                 }
                 else
                 {
@@ -3569,23 +3579,23 @@ namespace BMS_Protocol_Simulator
                         chkOk ? "✓ 校验通过 (PASS)" : "✕ 校验错误 (FAIL)", frameChk, calcChk));
                     sb.AppendLine();
 
-                    sb.AppendLine("┌──────────┬──────────┬────────────────────────────────────────┐");
-                    sb.AppendLine("│ 字段名称 │ 报文内容 │ 物理意义与规范解析                     │");
-                    sb.AppendLine("├──────────┼──────────┼────────────────────────────────────────┤");
-                    sb.AppendLine("│ SOI      │ 0xDD     │ 起始标志位 (Start of Frame)            │");
-                    sb.AppendLine(string.Format("│ 命令码CMD│ 0x{0:X2}     │ {1,-38} │", cmd, GetJbdCmdDescription(cmd, 0xA5)));
-                    sb.AppendLine(string.Format("│ 状态码   │ 0x{0:X2}     │ {1,-38} │", status, statusDesc));
-                    sb.AppendLine(string.Format("│ 数据长度 │ 0x{0:X2} ({0}) │ 应答数据载荷长度 ({0} 字节)            │", dLen));
-                    sb.AppendLine(string.Format("│ 校验和   │ 0x{0:X4}   │ STATUS+LEN+DATA 累加和按位取反加1      │", frameChk));
-                    sb.AppendLine("│ EOI      │ 0x77     │ 结束标志位 (End of Frame)              │");
+                    sb.AppendLine("┌──────────┬──────────┬────────────────────────────────────────────┐");
+                    sb.AppendLine("│ " + PadRightDisplay("字段名称", 8) + " │ " + PadRightDisplay("报文内容", 8) + " │ " + PadRightDisplay("物理意义与规范解析", 42) + " │");
+                    sb.AppendLine("├──────────┼──────────┼────────────────────────────────────────────┤");
+                    sb.AppendLine("│ " + PadRightDisplay("SOI", 8) + " │ " + PadRightDisplay("0xDD", 8) + " │ " + PadRightDisplay("起始标志位 (Start of Frame)", 42) + " │");
+                    sb.AppendLine("│ " + PadRightDisplay("命令码", 8) + " │ " + PadRightDisplay(string.Format("0x{0:X2}", cmd), 8) + " │ " + PadRightDisplay(GetJbdCmdDescription(cmd, 0xA5), 42) + " │");
+                    sb.AppendLine("│ " + PadRightDisplay("状态码", 8) + " │ " + PadRightDisplay(string.Format("0x{0:X2}", status), 8) + " │ " + PadRightDisplay(statusDesc, 42) + " │");
+                    sb.AppendLine("│ " + PadRightDisplay("数据长度", 8) + " │ " + PadRightDisplay(string.Format("0x{0:X2}({0})", dLen), 8) + " │ " + PadRightDisplay(string.Format("应答数据载荷长度 ({0} 字节)", dLen), 42) + " │");
+                    sb.AppendLine("│ " + PadRightDisplay("校验和", 8) + " │ " + PadRightDisplay(string.Format("0x{0:X4}", frameChk), 8) + " │ " + PadRightDisplay("STATUS+LEN+DATA 累加和按位取反加1", 42) + " │");
+                    sb.AppendLine("│ " + PadRightDisplay("EOI", 8) + " │ " + PadRightDisplay("0x77", 8) + " │ " + PadRightDisplay("结束标志位 (End of Frame)", 42) + " │");
                     int actualCbLen = Math.Max(0, raw.Length - (7 + dLen));
                     if (actualCbLen > 0)
                     {
                         byte[] cbBytes = new byte[actualCbLen];
                         Array.Copy(raw, 7 + dLen, cbBytes, 0, actualCbLen);
-                        sb.AppendLine(string.Format("│ CALLBACK │ {0,-8} │ 尾随回显 ID ({1} 字节, 原样回传给上位机) │", BitConverter.ToString(cbBytes).Replace("-", " "), actualCbLen));
+                        sb.AppendLine("│ " + PadRightDisplay("CALLBACK", 8) + " │ " + PadRightDisplay(BitConverter.ToString(cbBytes).Replace("-", " "), 8) + " │ " + PadRightDisplay(string.Format("尾随回显 ID ({0} 字节, 原样回传上位机)", actualCbLen), 42) + " │");
                     }
-                    sb.AppendLine("└──────────┴──────────┴────────────────────────────────────────┘");
+                    sb.AppendLine("└──────────┴──────────┴────────────────────────────────────────────┘");
 
                     if (dLen > 0 && raw.Length >= 4 + dLen)
                     {
@@ -3603,17 +3613,17 @@ namespace BMS_Protocol_Simulator
                             byte ntcCount = raw[26];
 
                             sb.AppendLine();
-                            sb.AppendLine("┌────────────────────┬────────────────────────────────────────┐");
-                            sb.AppendLine("│ 0x03 状态遥测属性  │ 解析数值与物理量                       │");
-                            sb.AppendLine("├────────────────────┼────────────────────────────────────────┤");
-                            sb.AppendLine(string.Format("│ 电池组总电压       │ {0:F2} V (原始值: {1} × 10mV)           │", uVolt / 100.0, uVolt));
+                            sb.AppendLine("┌────────────────────┬────────────────────────────────────────────┐");
+                            sb.AppendLine("│ " + PadRightDisplay("0x03 状态遥测属性", 18) + " │ " + PadRightDisplay("解析数值与物理量", 42) + " │");
+                            sb.AppendLine("├────────────────────┼────────────────────────────────────────────┤");
+                            sb.AppendLine("│ " + PadRightDisplay("电池组总电压", 18) + " │ " + PadRightDisplay(string.Format("{0:F2} V (原始值: {1} × 10mV)", uVolt / 100.0, uVolt), 42) + " │");
                             double iScale = (fet & 0x80) != 0 ? 10.0 : 100.0;
-                            sb.AppendLine(string.Format("│ 充放电实时电流     │ {0:F2} A ({1}, {2:F2}A)            │", sCurr / iScale, sCurr >= 0 ? "充电" : "放电", Math.Abs(sCurr / iScale)));
-                            sb.AppendLine(string.Format("│ 剩余容量 / 满充容量│ {0:F2} Ah / {1:F2} Ah                    │", uRemCap / iScale, uFullCap / iScale));
-                            sb.AppendLine(string.Format("│ 荷电状态 (SOC)     │ {0}%                                   │", rsoc));
-                            sb.AppendLine(string.Format("│ 循环次数 (Cycles)  │ {0} 次                                 │", uCycles));
-                            sb.AppendLine(string.Format("│ MOS 开关状态 (FET) │ 充MOS:{0} | 放MOS:{1} (FET=0x{2:X2})         │", (fet & 0x01) != 0 ? "导通(开)" : "关断", (fet & 0x02) != 0 ? "导通(开)" : "关断", fet));
-                            sb.AppendLine(string.Format("│ 电池串数 / NTC探头 │ {0} 串 / {1} 个温度探头                  │", strings, ntcCount));
+                            sb.AppendLine("│ " + PadRightDisplay("充放电实时电流", 18) + " │ " + PadRightDisplay(string.Format("{0:F2} A ({1}, {2:F2}A)", sCurr / iScale, sCurr >= 0 ? "充电" : "放电", Math.Abs(sCurr / iScale)), 42) + " │");
+                            sb.AppendLine("│ " + PadRightDisplay("剩余容量/满充容量", 18) + " │ " + PadRightDisplay(string.Format("{0:F2} Ah / {1:F2} Ah", uRemCap / iScale, uFullCap / iScale), 42) + " │");
+                            sb.AppendLine("│ " + PadRightDisplay("荷电状态 (SOC)", 18) + " │ " + PadRightDisplay(string.Format("{0}%", rsoc), 42) + " │");
+                            sb.AppendLine("│ " + PadRightDisplay("循环次数 (Cycles)", 18) + " │ " + PadRightDisplay(string.Format("{0} 次", uCycles), 42) + " │");
+                            sb.AppendLine("│ " + PadRightDisplay("MOS 开关状态(FET)", 18) + " │ " + PadRightDisplay(string.Format("充MOS:{0} | 放MOS:{1} (0x{2:X2})", (fet & 0x01) != 0 ? "导通" : "关断", (fet & 0x02) != 0 ? "导通" : "关断", fet), 42) + " │");
+                            sb.AppendLine("│ " + PadRightDisplay("电池串数/NTC探头", 18) + " │ " + PadRightDisplay(string.Format("{0} 串 / {1} 个温度探头", strings, ntcCount), 42) + " │");
                             if (dLen >= 23 + ntcCount * 2 && ntcCount > 0)
                             {
                                 for (int k = 0; k < ntcCount; k++)
@@ -3622,19 +3632,19 @@ namespace BMS_Protocol_Simulator
                                     if (ntcIdx + 1 < raw.Length)
                                     {
                                         ushort tk = (ushort)((raw[ntcIdx] << 8) | raw[ntcIdx + 1]);
-                                        sb.AppendLine(string.Format("│ NTC 探头 #{0} 温度    │ {1:F1} °C ({2} K)                      │", k + 1, (tk - 2731) / 10.0, tk / 10.0));
+                                        sb.AppendLine("│ " + PadRightDisplay(string.Format("NTC 探头 #{0} 温度", k + 1), 18) + " │ " + PadRightDisplay(string.Format("{0:F1} °C ({1:F1} K)", (tk - 2731) / 10.0, tk / 10.0), 42) + " │");
                                     }
                                 }
                             }
-                            sb.AppendLine(string.Format("│ 保护状态字 (Prot)  │ 0x{0:X4} (OV:{1}, UV:{2}, OC:{3}, SC:{4}) │", prot, (prot & 0x05) != 0 ? "1" : "0", (prot & 0x0A) != 0 ? "1" : "0", (prot & 0x0300) != 0 ? "1" : "0", (prot & 0x0400) != 0 ? "1" : "0"));
-                            sb.AppendLine("└────────────────────┴────────────────────────────────────────┘");
+                            sb.AppendLine("│ " + PadRightDisplay("保护状态字 (Prot)", 18) + " │ " + PadRightDisplay(string.Format("0x{0:X4} (OV:{1}, UV:{2}, OC:{3}, SC:{4})", prot, (prot & 0x05) != 0 ? "1" : "0", (prot & 0x0A) != 0 ? "1" : "0", (prot & 0x0300) != 0 ? "1" : "0", (prot & 0x0400) != 0 ? "1" : "0"), 42) + " │");
+                            sb.AppendLine("└────────────────────┴────────────────────────────────────────────┘");
                         }
                         else if (cmd == 0x04)
                         {
                             int cellCount = dLen / 2;
                             sb.AppendLine();
                             sb.AppendLine("┌──────────┬──────────┬────────────┐");
-                            sb.AppendLine("│ 电芯序号 │ 原始 HEX │ 电芯电压   │");
+                            sb.AppendLine("│ " + PadRightDisplay("电芯序号", 8) + " │ " + PadRightDisplay("原始 HEX", 8) + " │ " + PadRightDisplay("电芯电压", 10) + " │");
                             sb.AppendLine("├──────────┼──────────┼────────────┤");
                             for (int k = 0; k < cellCount; k++)
                             {
@@ -3642,7 +3652,7 @@ namespace BMS_Protocol_Simulator
                                 if (cIdx + 1 < raw.Length)
                                 {
                                     ushort cMv = (ushort)((raw[cIdx] << 8) | raw[cIdx + 1]);
-                                    sb.AppendLine(string.Format("│ Cell #{0,-2} │ 0x{1:X4}   │ {2} mV    │", k + 1, cMv, cMv));
+                                    sb.AppendLine("│ " + PadRightDisplay(string.Format("Cell #{0}", k + 1), 8) + " │ " + PadRightDisplay(string.Format("0x{0:X4}", cMv), 8) + " │ " + PadRightDisplay(string.Format("{0} mV", cMv), 10) + " │");
                                 }
                             }
                             sb.AppendLine("└──────────┴──────────┴────────────┘");
@@ -3654,7 +3664,7 @@ namespace BMS_Protocol_Simulator
                             sb.AppendLine(string.Format("• 硬件型号 ASCII: {0}", modelStr));
                         }
                     }
-                    return sb.ToString();
+                    return sb.ToString().TrimEnd('\r', '\n');
                 }
             }
 
@@ -3716,12 +3726,12 @@ namespace BMS_Protocol_Simulator
                     string snStr = Encoding.ASCII.GetString(raw, 22, 20).TrimEnd('\0', ' ');
                     sb.AppendLine();
                     sb.AppendLine("┌────────────────────┬────────────────────────────────────────┐");
-                    sb.AppendLine("│ 产品属性           │ 解析数值                               │");
+                    sb.AppendLine("│ " + PadRightDisplay("产品属性", 18) + " │ " + PadRightDisplay("解析数值", 38) + " │");
                     sb.AppendLine("├────────────────────┼────────────────────────────────────────┤");
-                    sb.AppendLine(string.Format("│ 产品型号 (Model)   │ {0,-38} │", modelStr));
-                    sb.AppendLine(string.Format("│ 固件版本 (SW Ver)  │ V{0:X}.{1:X2}                                │", swMaj, swMin));
-                    sb.AppendLine(string.Format("│ 硬件版本 (HW Ver)  │ V{0:X}.{1:X2}                                │", hwMaj, hwMin));
-                    sb.AppendLine(string.Format("│ 序列号   (SN)      │ {0,-38} │", snStr));
+                    sb.AppendLine("│ " + PadRightDisplay("产品型号 (Model)", 18) + " │ " + PadRightDisplay(modelStr, 38) + " │");
+                    sb.AppendLine("│ " + PadRightDisplay("固件版本 (SW Ver)", 18) + " │ " + PadRightDisplay(string.Format("V{0:X}.{1:X2}", swMaj, swMin), 38) + " │");
+                    sb.AppendLine("│ " + PadRightDisplay("硬件版本 (HW Ver)", 18) + " │ " + PadRightDisplay(string.Format("V{0:X}.{1:X2}", hwMaj, hwMin), 38) + " │");
+                    sb.AppendLine("│ " + PadRightDisplay("序列号   (SN)", 18) + " │ " + PadRightDisplay(snStr, 38) + " │");
                     sb.AppendLine("└────────────────────┴────────────────────────────────────────┘");
                 }
             }
@@ -3742,27 +3752,320 @@ namespace BMS_Protocol_Simulator
                     }
                 }
 
+                ushort inferredStartReg;
+                bool hasStartReg = TryInferModbusStartAddress(summaryPart, currentProtocolName, raw[1], regCount, isVoltronicHeader, out inferredStartReg);
+
                 sb.AppendLine(string.Format("• 从机地址 (Slave ID) : 0x{0:X2} ({0})", raw[0]));
                 sb.AppendLine(string.Format("• 功能码   (Function) : 0x{0:X2} ({1})", raw[1], raw[1] == 0x04 ? "读输入寄存器应答" : "读保持寄存器应答"));
                 sb.AppendLine(string.Format("• 帧头格式 (Header  ) : {0} (共 {1} 个 16-bit 寄存器字)",
                     isVoltronicHeader ? "Voltronic 双字节长度头 [ID][03][RegHi][RegLo]" : ("标准 Modbus 单字节长度头 [ID][0" + raw[1].ToString("X1") + "][ByteCnt]"), regCount));
                 sb.AppendLine();
-                sb.AppendLine("┌──────────┬──────────┬────────────┬────────────┬──────────────┐");
-                sb.AppendLine("│ 寄存器序 │ 十六进制 │ 无符号十进 │ 有符号十进 │ 常见缩放参考 │");
-                sb.AppendLine("├──────────┼──────────┼────────────┼────────────┼──────────────┤");
-                for (int i = 0; i < regCount; i++)
+
+                if (hasStartReg)
                 {
-                    int idx = dataStart + i * 2;
-                    if (idx + 1 >= raw.Length - 2) break;
-                    ushort uVal = (ushort)((raw[idx] << 8) | raw[idx + 1]);
-                    short sVal = (short)uVal;
-                    sb.AppendLine(string.Format("│ Word #{0,-2} │ 0x{1:X4}   │ {2,-10} │ {3,-10} │ {4,6:F2} (÷100)│",
-                        i, uVal, uVal, sVal, sVal / 100.0));
+                    sb.AppendLine("┌──────────┬──────────┬──────────┬──────────┬────────────────┬──────────────────────────────┐");
+                    sb.AppendLine("│ " + PadRightDisplay("寄存器序", 8) + " │ " + PadRightDisplay("寄存器址", 8) + " │ " + PadRightDisplay("十六进制", 8) + " │ " + PadRightDisplay("无符号值", 8) + " │ " + PadRightDisplay("常见缩放参考", 14) + " │ " + PadRightDisplay("协议字段与物理量解析", 28) + " │");
+                    sb.AppendLine("├──────────┼──────────┼──────────┼──────────┼────────────────┼──────────────────────────────┤");
+                    for (int i = 0; i < regCount; i++)
+                    {
+                        int idx = dataStart + i * 2;
+                        if (idx + 1 >= raw.Length - 2) break;
+                        ushort uVal = (ushort)((raw[idx] << 8) | raw[idx + 1]);
+                        short sVal = (short)uVal;
+                        ushort regAddr = (ushort)(inferredStartReg + i);
+                        string scaleCol = PadLeftDisplay(string.Format("{0:F2}", sVal / 100.0), 7) + " (÷100)";
+                        string semantic = GetModbusRegisterSemantic(currentProtocolName, raw[1], regAddr, uVal, sVal);
+                        sb.AppendLine("│ " + PadRightDisplay(string.Format("Word #{0}", i), 8)
+                            + " │ " + PadRightDisplay(string.Format("0x{0:X4}", regAddr), 8)
+                            + " │ " + PadRightDisplay(string.Format("0x{0:X4}", uVal), 8)
+                            + " │ " + PadRightDisplay(uVal.ToString(), 8)
+                            + " │ " + PadRightDisplay(scaleCol, 14)
+                            + " │ " + PadRightDisplay(semantic, 28) + " │");
+                    }
+                    sb.AppendLine("└──────────┴──────────┴──────────┴──────────┴────────────────┴──────────────────────────────┘");
                 }
-                sb.AppendLine("└──────────┴──────────┴────────────┴────────────┴──────────────┘");
+                else
+                {
+                    sb.AppendLine("┌──────────┬──────────┬────────────┬────────────┬────────────────┐");
+                    sb.AppendLine("│ " + PadRightDisplay("寄存器序", 8) + " │ " + PadRightDisplay("十六进制", 8) + " │ " + PadRightDisplay("无符号十进", 10) + " │ " + PadRightDisplay("有符号十进", 10) + " │ " + PadRightDisplay("常见缩放参考", 14) + " │");
+                    sb.AppendLine("├──────────┼──────────┼────────────┼────────────┼────────────────┤");
+                    for (int i = 0; i < regCount; i++)
+                    {
+                        int idx = dataStart + i * 2;
+                        if (idx + 1 >= raw.Length - 2) break;
+                        ushort uVal = (ushort)((raw[idx] << 8) | raw[idx + 1]);
+                        short sVal = (short)uVal;
+                        string scaleCol = PadLeftDisplay(string.Format("{0:F2}", sVal / 100.0), 7) + " (÷100)";
+                        sb.AppendLine("│ " + PadRightDisplay(string.Format("Word #{0}", i), 8)
+                            + " │ " + PadRightDisplay(string.Format("0x{0:X4}", uVal), 8)
+                            + " │ " + PadRightDisplay(uVal.ToString(), 10)
+                            + " │ " + PadRightDisplay(sVal.ToString(), 10)
+                            + " │ " + PadRightDisplay(scaleCol, 14) + " │");
+                    }
+                    sb.AppendLine("└──────────┴──────────┴────────────┴────────────┴────────────────┘");
+                }
             }
 
-            return sb.ToString();
+            return sb.ToString().TrimEnd('\r', '\n');
+        }
+
+        public static int GetCharDisplayWidth(char c)
+        {
+            if (c <= 0x00FF) return 1;
+            if (c >= 0x2500 && c <= 0x257F) return 1;
+            if (c == '✓' || c == '✕' || c == '•') return 1;
+            if (c >= 0x2E80 && c <= 0x9FFF) return 2;
+            if (c >= 0xF900 && c <= 0xFAFF) return 2;
+            if (c >= 0xFE30 && c <= 0xFE6F) return 2;
+            if (c >= 0xFF01 && c <= 0xFF60) return 2;
+            return 1;
+        }
+
+        public static int GetDisplayWidth(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return 0;
+            int w = 0;
+            for (int i = 0; i < s.Length; i++) w += GetCharDisplayWidth(s[i]);
+            return w;
+        }
+
+        private static string PadRightDisplay(string s, int targetWidth)
+        {
+            if (s == null) s = "";
+            int w = GetDisplayWidth(s);
+            if (w > targetWidth)
+            {
+                StringBuilder cut = new StringBuilder();
+                int cw = 0;
+                for (int i = 0; i < s.Length; i++)
+                {
+                    int charW = GetCharDisplayWidth(s[i]);
+                    if (cw + charW > targetWidth) break;
+                    cut.Append(s[i]);
+                    cw += charW;
+                }
+                return cut.ToString() + new string(' ', targetWidth - cw);
+            }
+            return s + new string(' ', targetWidth - w);
+        }
+
+        private static string PadLeftDisplay(string s, int targetWidth)
+        {
+            if (s == null) s = "";
+            int w = GetDisplayWidth(s);
+            if (w >= targetWidth) return s;
+            return new string(' ', targetWidth - w) + s;
+        }
+
+        private static void AppendFormattedHexBlock(StringBuilder sb, string prefix, byte[] raw)
+        {
+            if (raw == null || raw.Length == 0) return;
+            if (raw.Length <= 16)
+            {
+                sb.AppendLine(prefix + BitConverter.ToString(raw).Replace("-", " "));
+                return;
+            }
+
+            string indent = new string(' ', GetDisplayWidth(prefix));
+            for (int offset = 0; offset < raw.Length; offset += 16)
+            {
+                int count = Math.Min(16, raw.Length - offset);
+                StringBuilder lineHex = new StringBuilder();
+                lineHex.AppendFormat("[{0:D2}..{1:D2}] ", offset, offset + count - 1);
+                for (int i = 0; i < count; i++)
+                {
+                    if (i == 8) lineHex.Append(' ');
+                    lineHex.AppendFormat("{0:X2}", raw[offset + i]);
+                    if (i < count - 1) lineHex.Append(' ');
+                }
+                sb.AppendLine((offset == 0 ? prefix : indent) + lineHex.ToString());
+            }
+        }
+
+        private static void AppendWrappedSummary(StringBuilder sb, string prefix, string content, int maxContentCols)
+        {
+            if (string.IsNullOrEmpty(content)) return;
+            if (GetDisplayWidth(content) <= maxContentCols)
+            {
+                sb.AppendLine(prefix + content);
+                return;
+            }
+
+            string indent = new string(' ', GetDisplayWidth(prefix));
+            int pos = 0;
+            bool firstLine = true;
+            while (pos < content.Length)
+            {
+                int cols = 0;
+                int end = pos;
+                int lastBreak = -1;
+                while (end < content.Length)
+                {
+                    int cw = GetCharDisplayWidth(content[end]);
+                    if (cols + cw > maxContentCols) break;
+                    cols += cw;
+                    if (content[end] == ',' || content[end] == ' ' || content[end] == '|')
+                        lastBreak = end + 1;
+                    end++;
+                }
+
+                int cutEnd = (end < content.Length && lastBreak > pos + 10) ? lastBreak : end;
+                string chunk = content.Substring(pos, cutEnd - pos).Trim();
+                sb.AppendLine((firstLine ? prefix : indent) + chunk);
+                firstLine = false;
+                pos = cutEnd;
+                while (pos < content.Length && content[pos] == ' ') pos++;
+            }
+        }
+
+        private static bool TryInferModbusStartAddress(string summaryPart, string protocolName, byte funcCode, int regCount, bool isVoltronicHeader, out ushort startAddr)
+        {
+            startAddr = 0;
+            if (!string.IsNullOrEmpty(summaryPart))
+            {
+                int oxIdx = summaryPart.IndexOf("0x", StringComparison.OrdinalIgnoreCase);
+                while (oxIdx >= 0 && oxIdx + 6 <= summaryPart.Length)
+                {
+                    string hexCandidate = summaryPart.Substring(oxIdx + 2, 4);
+                    ushort parsed;
+                    if (ushort.TryParse(hexCandidate, System.Globalization.NumberStyles.HexNumber, null, out parsed))
+                    {
+                        startAddr = parsed;
+                        return true;
+                    }
+                    oxIdx = summaryPart.IndexOf("0x", oxIdx + 2, StringComparison.OrdinalIgnoreCase);
+                }
+            }
+
+            string prot = (protocolName ?? "").ToUpperInvariant();
+            if (funcCode == 0x04 || prot.Contains("LIB_MODBUS") || prot.Contains("SHENGYANG"))
+            {
+                startAddr = 0x1000;
+                return true;
+            }
+            if (isVoltronicHeader || prot.Contains("VOLTRONIC"))
+            {
+                if (regCount == 6) { startAddr = 0x0030; return true; }
+                if (regCount == 10) { startAddr = 0x0060; return true; }
+                if (regCount == 5 || regCount == 3) { startAddr = 0x0070; return true; }
+            }
+            if (prot.Contains("CVTE"))
+            {
+                if (regCount == 13 || regCount == 12) { startAddr = 0x0020; return true; }
+            }
+            if (prot.Contains("GROWATT"))
+            {
+                if (regCount == 17) { startAddr = 0x0013; return true; }
+                if (regCount == 15) { startAddr = 0x0014; return true; }
+                if (regCount == 35) { startAddr = 0x0001; return true; }
+            }
+            return false;
+        }
+
+        private static string GetModbusRegisterSemantic(string protocolName, byte funcCode, ushort regAddr, ushort uVal, short sVal)
+        {
+            string prot = (protocolName ?? "").ToUpperInvariant();
+            if (funcCode == 0x04 || regAddr >= 0x1000 || prot.Contains("LIB_MODBUS") || prot.Contains("SHENGYANG"))
+            {
+                switch (regAddr)
+                {
+                    case 0x1000: return string.Format("电池总电压: {0:F2} V", uVal / 100.0);
+                    case 0x1001: return string.Format("充放电电流: {0:F2} A", sVal / 100.0);
+                    case 0x1002: return string.Format("剩余容量: {0:F2} Ah", uVal / 100.0);
+                    case 0x1003: return string.Format("电芯温度1: {0:F1} °C", sVal / 10.0);
+                    case 0x1004: return string.Format("电芯温度2: {0:F1} °C", sVal / 10.0);
+                    case 0x1005: return string.Format("告警标志字: 0x{0:X4}", uVal);
+                    case 0x1006: return string.Format("保护标志字: 0x{0:X4}", uVal);
+                    case 0x1007: return string.Format("故障与状态字: 0x{0:X4}", uVal);
+                    case 0x1008: return string.Format("电池 SOC: {0:F1} %", uVal / 10.0);
+                    case 0x1009: return string.Format("健康度 SOH: {0:F1} %", uVal / 10.0);
+                    case 0x100A: return string.Format("满充容量: {0:F2} Ah", uVal / 100.0);
+                    case 0x100B: return string.Format("循环次数: {0} 次", uVal);
+                    case 0x100C: return string.Format("最大充电电流: {0:F2} A", uVal / 100.0);
+                    case 0x100D: return string.Format("最高单体电压: {0} mV", uVal);
+                    case 0x100E: return string.Format("最低单体电压: {0} mV", uVal);
+                    case 0x100F: return "预留寄存器 (Reserved)";
+                    case 0x1010: return string.Format("最高单体温度: {0:F1} °C", sVal / 10.0);
+                    case 0x1011: return string.Format("最低单体温度: {0:F1} °C", sVal / 10.0);
+                    case 0x1012: return string.Format("环境温度: {0:F1} °C", sVal / 10.0);
+                    case 0x1013: return "预留寄存器 (Reserved)";
+                    case 0x1014: return string.Format("CV 恒压点: {0:F2} V", uVal / 100.0);
+                    case 0x1015: return string.Format("设计容量: {0:F2} Ah", uVal / 100.0);
+                    case 0x1016: return "预留寄存器 (Reserved)";
+                }
+            }
+            if (prot.Contains("VOLTRONIC"))
+            {
+                switch (regAddr)
+                {
+                    case 0x0030: return string.Format("充电电流: {0:F1} A", uVal / 10.0);
+                    case 0x0031: return string.Format("放电电流: {0:F1} A", uVal / 10.0);
+                    case 0x0032: return string.Format("电池总压: {0:F1} V", uVal / 10.0);
+                    case 0x0033: return string.Format("电池 SOC: {0} %", uVal);
+                    case 0x0034: return "总容量高字 (mAh Hi)";
+                    case 0x0035: return "总容量低字 (mAh Lo)";
+                    case 0x0070: return string.Format("CV 充电限压: {0:F1} V", uVal / 10.0);
+                    case 0x0071: return string.Format("放电截止电压: {0:F1} V", uVal / 10.0);
+                    case 0x0072: return string.Format("最大充电电流: {0:F1} A", uVal / 10.0);
+                    case 0x0073: return string.Format("最大放电电流: {0:F1} A", uVal / 10.0);
+                    case 0x0074: return string.Format("充放电状态字: 0x{0:X4}", uVal);
+                }
+                if (regAddr >= 0x0060 && regAddr <= 0x0069)
+                    return uVal == 0 ? "状态正常 (00H)" : string.Format("告警/保护触发 (0x{0:X2})", uVal);
+                if (regAddr >= 0x0026 && regAddr <= 0x002F)
+                    return string.Format("温度探头: {0:F1} °C", (uVal / 10.0) - 273.15);
+            }
+            if (prot.Contains("GROWATT"))
+            {
+                switch (regAddr)
+                {
+                    case 0x0013: return string.Format("系统状态字: 0x{0:X4}", uVal);
+                    case 0x0014: return string.Format("故障保护字: 0x{0:X4}", uVal);
+                    case 0x0015: return string.Format("电池 SOC: {0} %", uVal);
+                    case 0x0016: return string.Format("电池总电压: {0:F2} V", uVal / 100.0);
+                    case 0x0017: return string.Format("充放电电流: {0:F2} A", sVal / 100.0);
+                    case 0x0018: return string.Format("电池温度: {0} °C", sVal);
+                    case 0x0019: return string.Format("最大充电电流: {0:F2} A", uVal / 100.0);
+                    case 0x001A: return string.Format("剩余容量: {0:F2} Ah", uVal / 100.0);
+                    case 0x001B: return string.Format("满充容量: {0:F2} Ah", uVal / 100.0);
+                    case 0x001C: return string.Format("软硬件版本: 0x{0:X4}", uVal);
+                    case 0x001D: return string.Format("单体压差: {0} mV", uVal);
+                    case 0x001E: return string.Format("循环次数: {0} 次", uVal);
+                    case 0x0020: return string.Format("健康度 SOH: {0} %", uVal & 0x7F);
+                    case 0x0021: return string.Format("CV 恒压点: {0:F2} V", uVal / 100.0);
+                    case 0x0022: return string.Format("警告状态字: 0x{0:X4}", uVal);
+                    case 0x0023: return string.Format("最大放电电流: {0:F2} A", uVal / 100.0);
+                    case 0x0025: return string.Format("最高单体电压: {0} mV", uVal);
+                    case 0x0026: return string.Format("最低单体电压: {0} mV", uVal);
+                }
+                if (regAddr >= 0x0071 && regAddr <= 0x0080)
+                    return string.Format("电芯 #{0} 电压: {1} mV", regAddr - 0x0070, uVal);
+            }
+            if (prot.Contains("CVTE"))
+            {
+                switch (regAddr)
+                {
+                    case 0x0020: return string.Format("运行状态字: 0x{0:X4}", uVal);
+                    case 0x0021: return string.Format("电池总电压: {0:F2} V", uVal / 100.0);
+                    case 0x0022: return string.Format("充放电电流: {0:F2} A", sVal / 100.0);
+                    case 0x0023: return string.Format("最高温度: {0} °C", sVal);
+                    case 0x0024: return string.Format("电池 SOC: {0} %", uVal);
+                    case 0x0025: return string.Format("剩余容量: {0:F2} Ah", uVal / 100.0);
+                    case 0x0026: return string.Format("满充容量: {0:F2} Ah", uVal / 100.0);
+                    case 0x0027: return string.Format("故障保护字: 0x{0:X4}", uVal);
+                    case 0x0028: return string.Format("警告状态字: 0x{0:X4}", uVal);
+                    case 0x0029: return string.Format("最大充电电流: {0:F2} A", uVal / 100.0);
+                    case 0x002A: return string.Format("CV 恒压点: {0:F2} V", uVal / 100.0);
+                    case 0x002B: return string.Format("健康度 SOH: {0} %", uVal);
+                    case 0x002C: return string.Format("循环次数: {0} 次", uVal);
+                    case 0x002E: return string.Format("最高单体电压: {0} mV", uVal);
+                    case 0x0030: return string.Format("最低单体电压: {0} mV", uVal);
+                    case 0x0032: return string.Format("单体压差: {0} mV", uVal);
+                }
+                if (regAddr >= 0x0041 && regAddr <= 0x005A)
+                    return string.Format("电芯 #{0} 电压: {1} mV", regAddr - 0x0040, uVal);
+            }
+            return string.Format("有符号: {0}", sVal);
         }
 
         private static string GetJbdCmdDescription(byte cmd, byte rw)
